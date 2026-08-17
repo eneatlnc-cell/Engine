@@ -8,6 +8,7 @@ import com.engine.crypto.KeyGenerationResult
 import com.engine.data.BoundIdentityStore
 import com.securesocial.core.ipc.IpcCallback
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -201,10 +202,26 @@ class KeyBindingViewModel : ViewModel() {
             currentResult = null
             sessionManager.convertBoundToPublicKeyOnly()
 
-            // v3: 绑定成功不再连接中继!
-            // 绑定 ≠ 登录: 未登录时连接会在中继挑战处弹出 Vault 签名指纹框,
-            // 与登录验证指纹框互抢前台 (表现为 "绑定陷入循环")。
-            // 中继连接统一由 LoginViewModel 验证成功后的 onLoginVerified() 发起。
+            // v3.5: 绑定即登录 (修复 "绑定后跳回应用又弹验证陷入死循环")。
+            //
+            // 绑定回调已用本次密钥对验签通过 = Vault 刚完成了
+            // 生物识别 (导入指纹门) 并确认持有私钥 —— 这本身就是
+            // 一次完整的 "在场证明"。旧流程绑定完成后 LoginGate 检测
+            // "已绑定未登录" 又要唤起 Vault 指纹验证, 紧接着中继挑战
+            // 再弹一次签名指纹: 用户一分钟内被要求按 3 次指纹、
+            // 跨应用切换 4 次, 表现为 "打开应用循环"。
+            //
+            // 现绑定成功直接置登录态, LoginGate 放行进主界面;
+            // 中继连接延迟 1.5s 发起 (等 UI 切换稳定)。挑战签名到来时
+            // Vault 侧仍在导入指纹的 30s 授权窗口内 → 静默签名,
+            // 全程仅一次指纹。
+            app.isLoggedIn = true
+            viewModelScope.launch {
+                delay(BINDING_RELAY_DELAY_MS)
+                if (app.isLoggedIn) {
+                    app.onLoginVerified()
+                }
+            }
         } else {
             // 失败回调: 有签名则严格验签 (防止跨流程篡改), 无签名则按失败处理
             if (callback.hasSignatureMaterial) {
@@ -235,5 +252,8 @@ class KeyBindingViewModel : ViewModel() {
 
     companion object {
         private const val QR_CODE_SIZE = 600
+
+        /** 绑定成功后延迟发起中继连接 (v3.5: 等 UI 切换稳定) */
+        private const val BINDING_RELAY_DELAY_MS = 1_500L
     }
 }
