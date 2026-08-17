@@ -104,6 +104,12 @@ class LoginViewModel : ViewModel() {
         if (callback.isSuccess) {
             app.isLoggedIn = true
             _uiState.value = LoginUiState.Success
+
+            // v3: 登录成功是中继连接的唯一合法入口。
+            // 修复 "杀进程后登录无法完成签名": 旧逻辑登录成功后无人连接中继,
+            // 首次绑定场景靠 KeyBindingViewModel 连接 (未登录即连 → 指纹框互抢),
+            // 二次启动场景则彻底无人连接 → 挑战签名永不触发。
+            app.onLoginVerified()
         } else {
             _uiState.value = LoginUiState.Error(
                 callback.errorCode?.description ?: "验证失败, 请重试"

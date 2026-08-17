@@ -185,6 +185,10 @@ class EngineApp : Application() {
 
     /**
      * 登录验证成功后调用: 恢复绑定身份并连接中继
+     *
+     * v3: 唯一合法的中继连接入口 —— 仅登录后调用。
+     * 绑定流程 (KeyBindingViewModel) 不再触发连接, 消除
+     * "未登录即连接 → 挑战指纹框与登录验证框互抢" 的循环。
      */
     fun onLoginVerified() {
         if (sessionManager.identityFingerprint == null) {
@@ -196,10 +200,11 @@ class EngineApp : Application() {
     }
 
     /**
-     * 统一的 Vault 签名请求入口 (v3: 挑战风暴节流)
+     * 统一的 Vault 签名请求入口 (v3: 挑战风暴节流 + 登录门控)
      *
      * 中继断线重连风暴时 CHALLENGE/ECDH 信令可能密集到达, 若每次都唤起
      * Vault 指纹框会造成连环弹框 (表现为指纹框抖动/闪现)。此处:
+     * 0. 未登录 → 一律拒绝 (登录验证期间绝不允许签名请求弹框互抢)
      * 1. 已有签名请求在途 → 跳过 (旧请求对应旧连接, 结果已无意义)
      * 2. 1 秒节流窗口 → 跳过 (防瞬间重复)
      *
@@ -208,6 +213,11 @@ class EngineApp : Application() {
      * @return true 表示已发起
      */
     private fun launchSignRequest(content: ByteArray, onResult: (String?) -> Unit): Boolean {
+        // v3: 登录门控 —— 登录指纹框 (VerifyActivity) 进行中绝不弹签名框
+        if (!isLoggedIn) {
+            Log.w(TAG, "Sign request rejected: not logged in")
+            return false
+        }
         if (pendingSignRequests.isNotEmpty()) {
             Log.w(TAG, "Sign request throttled: another request in flight")
             return false
@@ -263,9 +273,25 @@ class EngineApp : Application() {
     }
 
     /**
-     * 连接中继 (需要已绑定身份)
+     * 连接中继 (需要已绑定身份 + 已登录)
+     *
+     * v3 双门控:
+     * - 未登录 → 拒绝 (防绑定完成后未登录就连中继, 挑战签名框
+     *   与登录验证框互抢导致 "绑定陷入循环")
+     * - 已连接/连接中 → 跳过 (幂等, 防并发重复建链)
      */
     fun connectRelay() {
+        if (!isLoggedIn) {
+            Log.w(TAG, "connectRelay skipped: not logged in (connect after login only)")
+            return
+        }
+        when (relayManager.connectionState.value) {
+            ConnectionState.CONNECTING, ConnectionState.CONNECTED -> {
+                Log.d(TAG, "connectRelay skipped: already connected/connecting")
+                return
+            }
+            else -> Unit
+        }
         val fp = sessionManager.identityFingerprint ?: run {
             Log.w(TAG, "connectRelay skipped: no bound identity")
             return

@@ -201,8 +201,10 @@ class KeyBindingViewModel : ViewModel() {
             currentResult = null
             sessionManager.convertBoundToPublicKeyOnly()
 
-            // 绑定成功后连接中继
-            app.connectRelay()
+            // v3: 绑定成功不再连接中继!
+            // 绑定 ≠ 登录: 未登录时连接会在中继挑战处弹出 Vault 签名指纹框,
+            // 与登录验证指纹框互抢前台 (表现为 "绑定陷入循环")。
+            // 中继连接统一由 LoginViewModel 验证成功后的 onLoginVerified() 发起。
         } else {
             // 失败回调: 有签名则严格验签 (防止跨流程篡改), 无签名则按失败处理
             if (callback.hasSignatureMaterial) {
