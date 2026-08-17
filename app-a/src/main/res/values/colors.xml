@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- M3 Primary 色, 用于主题 (图标背景使用 drawable/ic_launcher_background.xml 渐变) -->
+    <color name="engine_primary">#0061A4</color>
+    <color name="ic_launcher_background">#0061A4</color>
+</resources>

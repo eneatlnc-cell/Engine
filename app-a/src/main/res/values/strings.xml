@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Engine</string>
+    <string name="app_title">Engine</string>
+
+    <!-- 聊天列表 -->
+    <string name="nav_chats">聊天</string>
+    <string name="nav_contacts">联系人</string>
+    <string name="nav_key_binding">密钥绑定</string>
+    <string name="my_fingerprint_label">我的指纹</string>
+    <string name="no_chats_hint">暂无会话, 请先添加联系人</string>
+    <string name="add_contact">添加联系人</string>
+
+    <!-- 聊天页面 -->
+    <string name="input_hint">输入消息…</string>
+    <string name="send">发送</string>
+    <string name="peer_offline_hint">对方离线, 消息未送达</string>
+    <string name="resend">重发</string>
+    <string name="message_failed">发送失败</string>
+    <string name="message_pending">发送中</string>
+    <string name="message_sent">已发送</string>
+    <string name="message_delivered">已送达</string>
+
+    <!-- 联系人页面 -->
+    <string name="contact_fingerprint_hint">对方公钥指纹</string>
+    <string name="contact_nickname_hint">昵称备注</string>
+    <string name="no_contacts_hint">暂无联系人</string>
+    <string name="confirm">确认</string>
+    <string name="cancel">取消</string>
+
+    <!-- 密钥绑定页面 -->
+    <string name="key_binding_title">密钥绑定</string>
+    <string name="qr_instruction">点击下方按钮, Vault 将自动识别并导入密钥</string>
+    <string name="scan_to_import">扫码导入</string>
+    <string name="launch_vault">一键召唤 Vault</string>
+    <string name="generating_key">正在生成密钥对…</string>
+    <string name="waiting_callback">等待 Vault 回调中…</string>
+    <string name="binding_success">密钥绑定成功</string>
+    <string name="binding_failed">密钥绑定失败</string>
+
+    <!-- 连接状态 -->
+    <string name="status_connected">中继已连接</string>
+    <string name="status_connecting">正在连接中继…</string>
+    <string name="status_disconnected">离线</string>
+    <string name="status_error">连接错误</string>
+
+    <!-- v2: IPC 权限描述 (系统设置/授权提示用) -->
+    <string name="perm_callback_desc">允许同签名应用 (Vault) 向 Engine 投递 IPC 回调结果</string>
+</resources>

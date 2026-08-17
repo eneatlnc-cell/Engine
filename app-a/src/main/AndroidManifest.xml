@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+        v2: 持有 Vault 侧 signature 级权限, 允许 Engine 唤起 Vault 的
+        import / verify / sign 入口组件。
+        仅当两 App 使用同一签名证书时系统才授予 (开发期共用 debug keystore)。
+    -->
+    <uses-permission android:name="com.vault.permission.VAULT_IPC" />
+
+    <!--
+        v2: Engine 侧 signature 级自定义权限, 保护本 App 的回调入口组件。
+        定义者: Engine; 持有者: 与 Engine 同证书签名的应用 (即 Vault)。
+    -->
+    <permission
+        android:name="com.engine.permission.ENGINE_CALLBACK"
+        android:label="Engine IPC Callback"
+        android:description="@string/perm_callback_desc"
+        android:protectionLevel="signature" />
+
+    <!--
+        Android 11+ (API 30) 包可见性声明:
+        1. 显式包名查询: 允许 Engine 查询/唤起 Vault (com.vault)
+        2. Intent 查询: 允许探测 myvault:// scheme 处理方
+    -->
+    <queries>
+        <package android:name="com.vault" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="myvault" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".EngineApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Engine"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false">
+
+        <!-- 主界面: 仅桌面启动入口 (v2 起 IPC 回调拆分至 CallbackActivity) -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Engine">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            IPC 回调入口 (v2, 修复: 登录回调伪造 / 隐式投递):
+            - android:permission: 仅持有 signature 权限者 (同证书的 Vault) 可投递,
+              恶意 App / 浏览器页面无法触达本组件
+            - 无 BROWSABLE 类别: 网页链接无法唤起
+            - 透明无 UI, 解析回调后立即 finish()
+        -->
+        <activity
+            android:name=".ipc.CallbackActivity"
+            android:exported="true"
+            android:permission="com.engine.permission.ENGINE_CALLBACK"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="myvault" android:host="callback" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

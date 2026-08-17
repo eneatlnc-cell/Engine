@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Engine App Icon Foreground: Origami Paper Sailboat (Refined 2026)
+
+    Design concept:
+    - A stylized folded-paper sailboat with multiple origami facets.
+    - Echoes Telegram's paper-plane metaphor (messages traveling the network)
+      but gives Engine a distinct nautical social identity.
+    - Sail (dominant): large triangle rising from the hull, drawn as four
+      facets that meet at crease lines so it reads as folded paper:
+        * Far-left facet  -> #FFFFFF (brightest, catching full light)
+        * Center-left     -> #F0F4F8 (white, slight shade)
+        * Center-right    -> #C8D4E0 (soft blue-gray, folded-away face)
+        * Far-right facet -> #AAB6C4 (deeper shadow)
+    - Hull: two-tone wedge (white deck + gray bottom) pointing right.
+    - Pennant: small triangle flag at mast top for a nautical touch.
+    - Wave: two subtle arcs below the hull suggesting water/motion.
+    - Safe area: sail y=22..66, hull y=66..78, wave y=80..86, centered x=54.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- ============ SAIL (4 origami facets) ============ -->
+
+    <!-- Far-left facet: brightest white (windward, full light) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,22 L36,66 L45,66 Z" />
+
+    <!-- Center-left facet: white (slight shade) -->
+    <path
+        android:fillColor="#F0F4F8"
+        android:pathData="M54,22 L45,66 L54,66 Z" />
+
+    <!-- Center-right facet: soft blue-gray (folded-away face) -->
+    <path
+        android:fillColor="#C8D4E0"
+        android:pathData="M54,22 L54,66 L63,66 Z" />
+
+    <!-- Far-right facet: deeper shadow -->
+    <path
+        android:fillColor="#AAB6C4"
+        android:pathData="M54,22 L63,66 L72,66 Z" />
+
+    <!-- ============ PENNANT (small flag at mast top) ============ -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,22 L62,26 L54,30 Z" />
+
+    <!-- ============ HULL (two-tone boat) ============ -->
+
+    <!-- Hull deck: white top surface -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M33,66 L75,66 L79,72 L29,72 Z" />
+
+    <!-- Hull bottom: gray underbelly -->
+    <path
+        android:fillColor="#C8D4E0"
+        android:pathData="M29,72 L79,72 L72,78 L36,78 Z" />
+
+    <!-- ============ WAVE (subtle water lines) ============ -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.35"
+        android:pathData="M30,83 Q38,80 46,83 Q54,86 62,83 Q70,80 78,83"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="0.8" />
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.2"
+        android:pathData="M34,87 Q42,84 50,87 Q58,90 66,87 Q70,85 74,87"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="0.6" />
+
+</vector>
