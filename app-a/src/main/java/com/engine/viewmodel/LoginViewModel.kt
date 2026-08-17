@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.engine.EngineApp
 import com.securesocial.core.ipc.IpcCallback
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -47,6 +49,14 @@ class LoginViewModel : ViewModel() {
     // 本次验证的 sessionId; 仅消费与其匹配的回调, 防止误吞绑定流程的回调
     private var pendingSessionId: String? = null
 
+    // v3.3: 验证超时任务 (Vault 未被成功唤起时的死锁兜底)
+    private var timeoutJob: Job? = null
+
+    companion object {
+        /** 等待 Vault 回调的超时 (毫秒): 正常指纹流程 20s 绰绰有余 */
+        private const val VERIFY_TIMEOUT_MS = 20_000L
+    }
+
     init {
         // 观察 Vault 回调, 按 sessionId 路由
         viewModelScope.launch {
@@ -61,6 +71,10 @@ class LoginViewModel : ViewModel() {
 
     /**
      * 通过 IPC 唤起 Vault 指纹验证
+     *
+     * v3.3: 加 20s 超时兜底 —— 若 Vault 唤起被 ROM 拦截/指纹框未展示,
+     * 回调永远不会到达, 旧版 Loading 态按钮永久禁用 = 死锁
+     * ("即使手动启动 Vault 也无法完成验证")。超时后自动复位可重试。
      */
     fun verify() {
         if (_uiState.value is LoginUiState.Loading) return
@@ -70,8 +84,26 @@ class LoginViewModel : ViewModel() {
             pendingSessionId = sessionId
             app.awaitingIpc = true
             _uiState.value = LoginUiState.Loading
+            armTimeout(sessionId)
         } else {
             _uiState.value = LoginUiState.Error("无法唤起 Vault, 请确认已安装")
+        }
+    }
+
+    /**
+     * 部署验证超时: 到期仍未收到匹配回调则复位到可重试状态
+     */
+    private fun armTimeout(sessionId: String) {
+        timeoutJob?.cancel()
+        timeoutJob = viewModelScope.launch {
+            delay(VERIFY_TIMEOUT_MS)
+            if (_uiState.value is LoginUiState.Loading && pendingSessionId == sessionId) {
+                app.awaitingIpc = false
+                pendingSessionId = null
+                _uiState.value = LoginUiState.Error(
+                    "验证超时: 未收到 Vault 回调 (唤起可能被系统拦截), 请重试"
+                )
+            }
         }
     }
 
@@ -84,6 +116,7 @@ class LoginViewModel : ViewModel() {
      *   仅 Vault 本尊可投递; 伪造失败回调最多造成重试提示, 无安全收益)
      */
     private fun handleCallback(callback: IpcCallback) {
+        timeoutJob?.cancel()  // v3.3: 回调已到达, 取消超时兜底
         app.awaitingIpc = false
 
         val boundPub = app.sessionManager.identityPublicKey
@@ -118,9 +151,13 @@ class LoginViewModel : ViewModel() {
     }
 
     /**
-     * 回到空闲状态 (错误后重试)
+     * 回到空闲状态 (错误后重试 / 重新绑定)
      */
     fun reset() {
+        timeoutJob?.cancel()
+        timeoutJob = null
+        pendingSessionId = null
+        app.awaitingIpc = false
         _uiState.value = LoginUiState.Idle
     }
 }
