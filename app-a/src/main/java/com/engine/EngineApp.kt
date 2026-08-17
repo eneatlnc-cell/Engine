@@ -24,9 +24,16 @@ import com.securesocial.core.protocol.ProtocolSerializer
 import com.securesocial.core.protocol.RelayAuth
 import com.securesocial.core.protocol.SignalPayload
 import com.securesocial.core.ipc.IpcCallback
+import com.securesocial.core.ipc.IpcErrorCode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.security.PublicKey
 import java.util.Base64
 import java.util.UUID
@@ -81,11 +88,30 @@ class EngineApp : Application() {
     var pendingRebindToKeys by mutableStateOf(false)
 
     // ---- v2: 签名请求登记 (中继挑战 / ECDH 信令, 回调在 App 层直接消费) ----
-    private val pendingSignRequests = ConcurrentHashMap<String, (String?) -> Unit>()
+    // v3.4: 值为 (签名结果, 失败错误码); error 非 null 表示 Vault 明确拒绝,
+    //       两者皆 null 表示无响应 (超时/Vault 被杀/唤起被拦截)
+    private val pendingSignRequests =
+        ConcurrentHashMap<String, (String?, IpcErrorCode?) -> Unit>()
+
+    /** 签名请求超时看护任务 (sessionId → 看护 Job) */
+    private val signTimeoutJobs = ConcurrentHashMap<String, Job>()
+
+    /** App 级协程域 (签名超时看护 / 挑战重试) */
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** 最近一次 launchSign 的发起时间 (v3: 挑战风暴节流) */
     @Volatile
     private var lastSignLaunchAt: Long = 0L
+
+    // ---- v3.4: 中继挑战自愈状态 ----
+
+    /** 当前待应答的中继挑战 nonce (Base64); null 表示无待处理挑战 */
+    @Volatile
+    private var pendingRelayChallenge: String? = null
+
+    /** 最近一次挑战签名失败时间 (失败退避, 防指纹框风暴) */
+    @Volatile
+    private var lastChallengeFailAt: Long = 0L
 
     // ---- v2: 消息防重放 (source → 已见最大 seq) ----
     private val lastSeqBySource = ConcurrentHashMap<String, Long>()
@@ -126,19 +152,27 @@ class EngineApp : Application() {
         if (sessionId != null) {
             val waiter = pendingSignRequests.remove(sessionId)
             if (waiter != null) {
-                awaitingIpc = false
+                // v3.4: 回调已到达, 取消超时看护; 仅当再无在途请求才复位 IPC 等待标志
+                signTimeoutJobs.remove(sessionId)?.cancel()
+                if (pendingSignRequests.isEmpty()) awaitingIpc = false
+
                 val pubKey = sessionManager.identityPublicKey
                 if (pubKey == null) {
-                    waiter(null)
+                    Log.w(TAG, "Sign callback rejected: no bound public key")
+                    waiter(null, IpcErrorCode.UNKNOWN_ERROR)
                     return
                 }
                 val verifyError = ipcClient.verifyCallbackSignature(callback, pubKey)
                 if (verifyError != null) {
                     Log.w(TAG, "Sign callback rejected: $verifyError")
-                    waiter(null)
+                    waiter(null, IpcErrorCode.UNKNOWN_ERROR)
                     return
                 }
-                waiter(if (callback.isSuccess) callback.result else null)
+                if (callback.isSuccess) {
+                    waiter(callback.result, null)
+                } else {
+                    waiter(null, callback.errorCode ?: IpcErrorCode.UNKNOWN_ERROR)
+                }
                 return
             }
         }
@@ -156,6 +190,19 @@ class EngineApp : Application() {
 
         /** Vault 签名请求节流窗口 (v3: 挑战/信令风暴防连环弹框) */
         private const val SIGN_LAUNCH_THROTTLE_MS = 1_000L
+
+        /**
+         * 签名请求超时 (v3.4): Vault 被杀/唤起被拦截/用户在 Vault 侧
+         * 退出时回调永不到达, 超时后清理登记并通知失败。
+         * 取值需覆盖用户从容完成一次指纹验证 (含重试) 的时间。
+         */
+        private const val SIGN_REQUEST_TIMEOUT_MS = 45_000L
+
+        /** 挑战应答被节流后的重试间隔 (v3.4) */
+        private const val CHALLENGE_RETRY_DELAY_MS = 2_000L
+
+        /** 挑战签名失败后的退避窗口 (v3.4: 防 Vault 不可用时指纹框风暴) */
+        private const val CHALLENGE_FAIL_BACKOFF_MS = 15_000L
 
         /**
          * 中继服务器地址 (v2: 经 BuildConfig 配置, 支持生产 VPS wss:// 地址)
@@ -200,19 +247,25 @@ class EngineApp : Application() {
     }
 
     /**
-     * 统一的 Vault 签名请求入口 (v3: 挑战风暴节流 + 登录门控)
+     * 统一的 Vault 签名请求入口 (v3: 挑战风暴节流 + 登录门控; v3.4: 超时看护)
      *
      * 中继断线重连风暴时 CHALLENGE/ECDH 信令可能密集到达, 若每次都唤起
      * Vault 指纹框会造成连环弹框 (表现为指纹框抖动/闪现)。此处:
      * 0. 未登录 → 一律拒绝 (登录验证期间绝不允许签名请求弹框互抢)
      * 1. 已有签名请求在途 → 跳过 (旧请求对应旧连接, 结果已无意义)
      * 2. 1 秒节流窗口 → 跳过 (防瞬间重复)
+     * 3. v3.4 超时看护: Vault 被杀/唤起被拦截/用户在 Vault 侧直接退出时
+     *    回调永远不会到达。若不清理, 在途门控会永久拒绝后续所有签名请求
+     *    ("杀进程后无法完成签名" 的直接根因)。超时后移除登记并通知失败。
      *
      * @param content  待签内容
-     * @param onResult 签名结果回调 (Base64 签名或 null=失败)
+     * @param onResult 结果回调: (Base64 签名, null)=成功; (null, 错误码)=失败
      * @return true 表示已发起
      */
-    private fun launchSignRequest(content: ByteArray, onResult: (String?) -> Unit): Boolean {
+    private fun launchSignRequest(
+        content: ByteArray,
+        onResult: (String?, IpcErrorCode?) -> Unit
+    ): Boolean {
         // v3: 登录门控 —— 登录指纹框 (VerifyActivity) 进行中绝不弹签名框
         if (!isLoggedIn) {
             Log.w(TAG, "Sign request rejected: not logged in")
@@ -233,8 +286,21 @@ class EngineApp : Application() {
         lastSignLaunchAt = now
         awaitingIpc = true
 
+        // v3.4: 部署超时看护 (Vault 无响应时自动清理, 保证系统可自愈)
+        signTimeoutJobs[sessionId] = appScope.launch {
+            delay(SIGN_REQUEST_TIMEOUT_MS)
+            val expired = pendingSignRequests.remove(sessionId)
+            if (expired != null) {
+                signTimeoutJobs.remove(sessionId)
+                if (pendingSignRequests.isEmpty()) awaitingIpc = false
+                Log.w(TAG, "Sign request timed out (${SIGN_REQUEST_TIMEOUT_MS}ms): $sessionId")
+                expired(null, IpcErrorCode.SIGN_TIMEOUT)
+            }
+        }
+
         val launched = ipcClient.launchSign(sessionId, content)
         if (!launched) {
+            signTimeoutJobs.remove(sessionId)?.cancel()
             pendingSignRequests.remove(sessionId)
             awaitingIpc = false
             return false
@@ -304,32 +370,70 @@ class EngineApp : Application() {
      * 处理中继注册挑战 (v2): 委托 Vault 用身份私钥签名后应答
      *
      * 挑战内容: "RELAY-AUTH-V1" ‖ fingerprint ‖ nonce
+     *
+     * v3.4 重构: 旧实现在被节流/签名失败时直接 disconnect() ——
+     * 而 disconnect 会关闭自动重连 (shouldReconnect=false), 连接一旦
+     * 因签名不可用中断就永久沉默 ("断线后再也连不上")。新实现:
+     * - 挑战 nonce 持久保存, 被节流时延迟重试而非放弃
+     * - 签名失败时不主动断开, 交由 RelayConnectionManager 的握手看门狗
+     *   判死连接并自动重连 (新连接带来新挑战, 再次尝试)
+     * - 失败后进入退避窗口, 防止 Vault 不可用时连环唤起指纹框 (抖动回归)
      */
     private fun handleRelayChallenge(nonceBase64: String) {
-        val fp = sessionManager.identityFingerprint ?: run {
+        if (sessionManager.identityFingerprint == null) {
+            // 无绑定身份无法注册: 放弃 (用户层引导去绑定)
+            pendingRelayChallenge = null
             relayManager.disconnect()
             return
         }
+        pendingRelayChallenge = nonceBase64
+        attemptRelayChallenge()
+    }
+
+    /**
+     * 尝试应答当前挑战 (v3.4): 节流退避 + 失败退避 + 延迟重试
+     */
+    private fun attemptRelayChallenge() {
+        val nonceBase64 = pendingRelayChallenge ?: return
+        val fp = sessionManager.identityFingerprint ?: return
         val nonce = try {
             b64d.decode(nonceBase64)
         } catch (e: Exception) {
+            pendingRelayChallenge = null
             relayManager.disconnect()
             return
         }
         val content = RelayAuth.signingContent(fp, nonce)
 
-        // v3: 走节流入口; 被跳过时放弃本次注册 (重连后新挑战会再次触发)
-        if (!launchSignRequest(content) { sigB64 ->
-                if (sigB64 != null) {
-                    relayManager.sendHelloAuth(sigB64)
-                } else {
-                    // Vault 不可用/签名失败: 放弃本次注册
-                    Log.w(TAG, "Relay auth: Vault signing unavailable")
-                    relayManager.disconnect()
-                }
+        // 失败退避: Vault 刚刚签名失败 (被杀/超时), 冷却期内不再唤起指纹框
+        val sinceFail = System.currentTimeMillis() - lastChallengeFailAt
+        if (lastChallengeFailAt > 0L && sinceFail < CHALLENGE_FAIL_BACKOFF_MS) {
+            Log.d(TAG, "Challenge backoff: ${CHALLENGE_FAIL_BACKOFF_MS - sinceFail}ms remaining")
+            appScope.launch {
+                delay(CHALLENGE_FAIL_BACKOFF_MS - sinceFail)
+                if (pendingRelayChallenge != null && isLoggedIn) attemptRelayChallenge()
             }
-        ) {
-            relayManager.disconnect()
+            return
+        }
+
+        val launched = launchSignRequest(content) { sigB64, _ ->
+            if (sigB64 != null) {
+                pendingRelayChallenge = null
+                relayManager.sendHelloAuth(sigB64)
+            } else {
+                // Vault 不可用/签名失败/超时: 不 disconnect (旧实现会永久断连)。
+                // 握手看门狗将判死本连接并自动重连, 新挑战到来时再次尝试;
+                // 退避窗口防止指纹框风暴。
+                lastChallengeFailAt = System.currentTimeMillis()
+                Log.w(TAG, "Relay auth: Vault signing unavailable, backing off")
+            }
+        }
+        if (!launched) {
+            // 被节流 (在途请求/冷却窗口): 在途请求结束后必有空档, 稍后重试
+            appScope.launch {
+                delay(CHALLENGE_RETRY_DELAY_MS)
+                if (pendingRelayChallenge != null && isLoggedIn) attemptRelayChallenge()
+            }
         }
     }
 
@@ -422,7 +526,7 @@ class EngineApp : Application() {
             ?: return false
 
         // v3: 走节流入口, 防信令风暴连环弹指纹框
-        return launchSignRequest(content) { sigB64 ->
+        return launchSignRequest(content) { sigB64, _ ->
             if (sigB64 != null) {
                 val signal = SignalPayload(
                     ecdh = b64e.encodeToString(ecdhPub),

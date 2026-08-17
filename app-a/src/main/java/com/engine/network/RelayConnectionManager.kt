@@ -103,6 +103,13 @@ class RelayConnectionManager {
     @Volatile
     private var lastPongTime: Long = 0L
 
+    // v3.4: 握手看门狗 —— CONNECTING (含挑战-应答) 停滞自愈。
+    // 场景: Vault 不可用导致 HELLO_AUTH 永不发出时, 服务端可能长时间
+    // 不关闭连接, 客户端停在 CONNECTING: 自动重连不触发 (socket 未断),
+    // connectRelay() 的幂等检查又把 CONNECTING 视为 "已连接" 跳过,
+    // 表现为 "再也连不上"。看门狗超时主动判死, 走自动重连路径。
+    private var handshakeWatchdogJob: Job? = null
+
     // 自动重连
     private var reconnectJob: Job? = null
     @Volatile
@@ -143,6 +150,7 @@ class RelayConnectionManager {
         shouldReconnect = false
         reconnectJob?.cancel()
         heartbeatJob?.cancel()
+        handshakeWatchdogJob?.cancel()
         webSocket?.close(1000, "Client disconnect")
         webSocket = null
         _connectionState.value = ConnectionState.DISCONNECTED
@@ -223,6 +231,7 @@ class RelayConnectionManager {
         val pubkey = myPubkeyBase64 ?: return
 
         _connectionState.value = ConnectionState.CONNECTING
+        startHandshakeWatchdog()
 
         val request = Request.Builder()
             .url(url)
@@ -262,6 +271,7 @@ class RelayConnectionManager {
         when (envelope.type) {
             MessageType.HELLO -> {
                 // 收到 HELLO ack → 挑战-应答认证通过, 注册完成
+                handshakeWatchdogJob?.cancel()
                 _connectionState.value = ConnectionState.CONNECTED
                 reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
                 lastPongTime = System.currentTimeMillis()
@@ -316,6 +326,29 @@ class RelayConnectionManager {
     }
 
     /**
+     * 启动握手看门狗 (v3.4)
+     *
+     * CONNECTING 状态超过 HANDSHAKE_TIMEOUT_MS 仍未收到 HELLO ack
+     * (典型: Vault 不可用 → 挑战无应答), 主动取消 socket 触发
+     * onFailure → onConnectionLost → 指数退避自动重连。
+     * 认证完成 (HELLO ack) 或连接自然断开时取消看门狗。
+     */
+    private fun startHandshakeWatchdog() {
+        handshakeWatchdogJob?.cancel()
+        handshakeWatchdogJob = scope.launch {
+            delay(HANDSHAKE_TIMEOUT_MS)
+            if (_connectionState.value == ConnectionState.CONNECTING) {
+                val ws = webSocket
+                if (ws != null) {
+                    ws.cancel()
+                } else {
+                    onConnectionLost("Handshake timeout (no socket)")
+                }
+            }
+        }
+    }
+
+    /**
      * 启动心跳定时器
      */
     private fun startHeartbeat() {
@@ -340,6 +373,7 @@ class RelayConnectionManager {
      */
     private fun onConnectionLost(reason: String) {
         heartbeatJob?.cancel()
+        handshakeWatchdogJob?.cancel()
         webSocket = null
         _connectionState.value = ConnectionState.ERROR
         callback?.onDisconnected()
@@ -370,5 +404,8 @@ class RelayConnectionManager {
     companion object {
         private const val INITIAL_RECONNECT_DELAY_MS = 1000L
         private const val MAX_RECONNECT_DELAY_MS = 30_000L
+
+        /** 握手 (HELLO → CHALLENGE → HELLO_AUTH → ack) 总超时 (v3.4) */
+        private const val HANDSHAKE_TIMEOUT_MS = 15_000L
     }
 }
