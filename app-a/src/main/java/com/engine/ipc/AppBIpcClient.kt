@@ -37,12 +37,12 @@ class AppBIpcClient(private val context: Context) {
      * 通过 myvault://import URI 唤起 Vault
      *
      * @param sessionId 会话标识 (Engine 生成, 用于关联请求与回调)
-     * @param payload  密钥二维码载荷 (JSON 字符串); 仅经 signature 权限保护的
+     * @param payload 密钥二维码载荷 (JSON 字符串); 仅经 signature 权限保护的
      *                 显式 Intent 传递, 恶意 App 无法截获
      * @return true 表示成功唤起, false 表示未找到目标 App
      */
     fun launchImport(sessionId: String, payload: String? = null): Boolean {
-        val uriString = IpcContract.buildImportUri(sessionId)
+        val uriString = IpcContract.buildImportUri(sessionId, context.packageName)
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uriString)).apply {
             // v2: 显式锁定 Vault 包名, 杜绝隐式 Intent 广播式投递
             setPackage(IpcContract.VAULT_PACKAGE)
@@ -67,7 +67,7 @@ class AppBIpcClient(private val context: Context) {
      * @return true 表示成功唤起, false 表示未找到目标 App
      */
     fun launchVerify(sessionId: String): Boolean {
-        val uriString = IpcContract.buildVerifyUri(sessionId)
+        val uriString = IpcContract.buildVerifyUri(sessionId, context.packageName)
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uriString)).apply {
             setPackage(IpcContract.VAULT_PACKAGE)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -90,7 +90,7 @@ class AppBIpcClient(private val context: Context) {
      */
     fun launchSign(sessionId: String, payloadBytes: ByteArray): Boolean {
         val payloadBase64 = java.util.Base64.getEncoder().encodeToString(payloadBytes)
-        val uriString = IpcContract.buildSignUri(sessionId, payloadBase64)
+        val uriString = IpcContract.buildSignUri(sessionId, payloadBase64, context.packageName)
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uriString)).apply {
             setPackage(IpcContract.VAULT_PACKAGE)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

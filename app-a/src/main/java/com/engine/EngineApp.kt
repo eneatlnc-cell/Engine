@@ -66,10 +66,14 @@ class EngineApp : Application() {
 
     /**
      * 显式登录状态: 是否已通过 Vault 指纹验证 (签名回调)
+     *
+     * v3: 进程级登录态 —— 冷启动 (进程被杀后重启) 需重新验证;
+     * 应用切换 (退后台/回前台) 不再复位, 由进程内存天然兜底:
+     * 进程死亡时本字段随之清零, 下次启动自然回到未登录态。
      */
     var isLoggedIn by mutableStateOf(false)
 
-    /** 是否正在等待 Vault 的 IPC 回调 (true 时后台不清理登录态) */
+    /** 是否正在等待 Vault 的 IPC 回调 */
     @Volatile
     var awaitingIpc: Boolean = false
 
@@ -79,6 +83,10 @@ class EngineApp : Application() {
     // ---- v2: 签名请求登记 (中继挑战 / ECDH 信令, 回调在 App 层直接消费) ----
     private val pendingSignRequests = ConcurrentHashMap<String, (String?) -> Unit>()
 
+    /** 最近一次 launchSign 的发起时间 (v3: 挑战风暴节流) */
+    @Volatile
+    private var lastSignLaunchAt: Long = 0L
+
     // ---- v2: 消息防重放 (source → 已见最大 seq) ----
     private val lastSeqBySource = ConcurrentHashMap<String, Long>()
 
@@ -86,14 +94,14 @@ class EngineApp : Application() {
     private val msgSeqCounter = AtomicLong(System.currentTimeMillis())
 
     /**
-     * App 退到后台时调用: 清除会话密钥等临时材料 (绑定公钥保留)
+     * App 退到后台时调用 (v3: no-op)
+     *
+     * v2 曾在此处复位登录态并销毁会话密钥 (每次切回前台都需重新验证),
+     * v3 按需求改为进程级登录: 切换应用不再重新验证, 仅进程结束后
+     * 下次启动需重新通过 Vault 指纹验证。内存回收由 [onTrimMemory] 兜底。
      */
     fun onAppBackground() {
-        if (awaitingIpc) return
-        if (isLoggedIn) {
-            isLoggedIn = false
-            sessionManager.destroyTransientKeys()
-        }
+        // v3: 进程级登录态, 后台切换不清除
     }
 
     fun toggleTheme() {
@@ -146,6 +154,9 @@ class EngineApp : Application() {
     companion object {
         private const val TAG = "EngineApp"
 
+        /** Vault 签名请求节流窗口 (v3: 挑战/信令风暴防连环弹框) */
+        private const val SIGN_LAUNCH_THROTTLE_MS = 1_000L
+
         /**
          * 中继服务器地址 (v2: 经 BuildConfig 配置, 支持生产 VPS wss:// 地址)
          * 构建时以 -PrelayUrl=... 覆盖, 详见 README 部署章节
@@ -182,6 +193,43 @@ class EngineApp : Application() {
             }
         }
         connectRelay()
+    }
+
+    /**
+     * 统一的 Vault 签名请求入口 (v3: 挑战风暴节流)
+     *
+     * 中继断线重连风暴时 CHALLENGE/ECDH 信令可能密集到达, 若每次都唤起
+     * Vault 指纹框会造成连环弹框 (表现为指纹框抖动/闪现)。此处:
+     * 1. 已有签名请求在途 → 跳过 (旧请求对应旧连接, 结果已无意义)
+     * 2. 1 秒节流窗口 → 跳过 (防瞬间重复)
+     *
+     * @param content  待签内容
+     * @param onResult 签名结果回调 (Base64 签名或 null=失败)
+     * @return true 表示已发起
+     */
+    private fun launchSignRequest(content: ByteArray, onResult: (String?) -> Unit): Boolean {
+        if (pendingSignRequests.isNotEmpty()) {
+            Log.w(TAG, "Sign request throttled: another request in flight")
+            return false
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastSignLaunchAt < SIGN_LAUNCH_THROTTLE_MS) {
+            Log.w(TAG, "Sign request throttled: within cooldown window")
+            return false
+        }
+
+        val sessionId = UUID.randomUUID().toString()
+        pendingSignRequests[sessionId] = onResult
+        lastSignLaunchAt = now
+        awaitingIpc = true
+
+        val launched = ipcClient.launchSign(sessionId, content)
+        if (!launched) {
+            pendingSignRequests.remove(sessionId)
+            awaitingIpc = false
+            return false
+        }
+        return true
     }
 
     // ==================== 中继连接 (挑战-应答) ====================
@@ -244,22 +292,17 @@ class EngineApp : Application() {
         }
         val content = RelayAuth.signingContent(fp, nonce)
 
-        val sessionId = UUID.randomUUID().toString()
-        pendingSignRequests[sessionId] = { sigB64 ->
-            if (sigB64 != null) {
-                relayManager.sendHelloAuth(sigB64)
-            } else {
-                // Vault 不可用/签名失败: 放弃本次注册
-                Log.w(TAG, "Relay auth: Vault signing unavailable")
-                relayManager.disconnect()
+        // v3: 走节流入口; 被跳过时放弃本次注册 (重连后新挑战会再次触发)
+        if (!launchSignRequest(content) { sigB64 ->
+                if (sigB64 != null) {
+                    relayManager.sendHelloAuth(sigB64)
+                } else {
+                    // Vault 不可用/签名失败: 放弃本次注册
+                    Log.w(TAG, "Relay auth: Vault signing unavailable")
+                    relayManager.disconnect()
+                }
             }
-        }
-
-        awaitingIpc = true
-        val launched = ipcClient.launchSign(sessionId, content)
-        if (!launched) {
-            pendingSignRequests.remove(sessionId)
-            awaitingIpc = false
+        ) {
             relayManager.disconnect()
         }
     }
@@ -352,8 +395,8 @@ class EngineApp : Application() {
         val content = sessionManager.buildOutgoingSignalSigningContent(ecdhPub, peerFingerprint)
             ?: return false
 
-        val sessionId = UUID.randomUUID().toString()
-        pendingSignRequests[sessionId] = { sigB64 ->
+        // v3: 走节流入口, 防信令风暴连环弹指纹框
+        return launchSignRequest(content) { sigB64 ->
             if (sigB64 != null) {
                 val signal = SignalPayload(
                     ecdh = b64e.encodeToString(ecdhPub),
@@ -366,15 +409,6 @@ class EngineApp : Application() {
                 Log.w(TAG, "Signal signing unavailable (Vault offline)")
             }
         }
-
-        awaitingIpc = true
-        val launched = ipcClient.launchSign(sessionId, content)
-        if (!launched) {
-            pendingSignRequests.remove(sessionId)
-            awaitingIpc = false
-            return false
-        }
-        return true
     }
 
     /**

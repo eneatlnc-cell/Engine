@@ -46,7 +46,9 @@ import com.engine.viewmodel.LoginViewModel
  * - Navigation Compose 导航 (聊天列表 ↔ 聊天页面)
  * - 登录门控: 已绑定指纹且未通过 Vault 验证时, 全屏展示 LoginScreen
  * - 处理 Intent (myvault://callback) → 传递给等待中的 ViewModel
- * - ON_STOP → EngineApp.onAppBackground() 复位登录态并销毁私钥
+ *
+ * v3: 登录态为进程级 —— 切换应用 (退后台/回前台) 不再重新验证,
+ * 仅进程结束后再次启动时需重新通过 Vault 指纹验证。
  */
 class MainActivity : ComponentActivity() {
 
@@ -61,15 +63,6 @@ class MainActivity : ComponentActivity() {
 
         // 处理启动 Intent (myvault://callback)
         handleCallbackIntent(intent)
-
-        val app = application as EngineApp
-
-        // 退到后台时复位登录态 + 销毁私钥 (IPC 等待中除外)
-        lifecycle.addObserver(object : androidx.lifecycle.DefaultLifecycleObserver {
-            override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
-                app.onAppBackground()
-            }
-        })
 
         setContent {
             EngineTheme(darkTheme = app.isDarkTheme) {
