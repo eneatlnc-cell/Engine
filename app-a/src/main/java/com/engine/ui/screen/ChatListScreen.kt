@@ -63,6 +63,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
@@ -133,11 +134,23 @@ fun ChatListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                // X (Twitter) 式居中标识: 两侧各占 48dp (左占位 + 右菜单按钮),
+                // 标题在剩余空间内绝对居中; 大写 + 加宽字距强化品牌感
+                navigationIcon = {
+                    Box(modifier = Modifier.size(48.dp))
+                },
                 title = {
-                    Text(
-                        text = "Engine",
-                        fontWeight = FontWeight.Bold
-                    )
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "ENGINE",
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 3.sp,
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                    }
                 },
                 actions = {
                     // 三点菜单
@@ -154,7 +167,7 @@ fun ChatListScreen(
                         ) {
                             DropdownMenuItem(
                                 text = {
-                                    Text(if (app.isDarkTheme) "切换白天模式" else "切换夜间模式")
+                                    Text(if (app.isDarkTheme) "白天模式" else "夜间模式")
                                 },
                                 onClick = {
                                     showOverflowMenu = false
