@@ -17,6 +17,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,6 +72,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -84,6 +88,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.engine.EngineApp
 import com.engine.ui.components.ChatListItem
+import com.engine.ui.theme.EngineLeafShape
 import com.engine.ui.theme.EngineMotion
 import com.engine.viewmodel.ChatListViewModel
 
@@ -213,7 +218,7 @@ fun ChatListScreen(
                                 text = {
                                     Text(
                                         "Spark",
-                                        color = MaterialTheme.colorScheme.primary,
+                                        color = MaterialTheme.colorScheme.tertiary,
                                         fontWeight = FontWeight.SemiBold
                                     )
                                 },
@@ -225,7 +230,7 @@ fun ChatListScreen(
                                     Icon(
                                         imageVector = Icons.Filled.LocalFireDepartment,
                                         contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary
+                                        tint = MaterialTheme.colorScheme.tertiary
                                     )
                                 }
                             )
@@ -349,7 +354,7 @@ fun ChatListScreen(
         )
     }
 
-    // Spark 底部弹窗
+    // Spark 底部弹窗 (v3.7: 火焰橙品牌化 + 不对称叶片卡片)
     if (showSparkSheet) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(
@@ -365,7 +370,7 @@ fun ChatListScreen(
                 Icon(
                     imageVector = Icons.Filled.LocalFireDepartment,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
+                    tint = MaterialTheme.colorScheme.tertiary,
                     modifier = Modifier.size(48.dp)
                 )
                 Spacer(Modifier.size(12.dp))
@@ -373,13 +378,47 @@ fun ChatListScreen(
                     text = "Spark",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
+                    color = MaterialTheme.colorScheme.tertiary
                 )
-                Spacer(Modifier.size(8.dp))
+                Spacer(Modifier.size(16.dp))
+
+                // 计费卡片: 电流渐变 + 叶片形 (M3E 有机形状)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(EngineLeafShape)
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.primary,
+                                    MaterialTheme.colorScheme.tertiary
+                                )
+                            )
+                        )
+                        .padding(horizontal = 24.dp, vertical = 20.dp)
+                ) {
+                    Column {
+                        Text(
+                            text = "10 ⚡ / 条",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White
+                        )
+                        Spacer(Modifier.size(4.dp))
+                        Text(
+                            text = "单条 ≤ 1KB · 文字 / 图片 / 链接同价",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.9f)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.size(16.dp))
                 Text(
                     text = "Spark 是 Engine 的燃料\n每次发送消息需要消耗 Spark\n未来可用于激励节点中继和群组广播",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     modifier = Modifier.padding(horizontal = 16.dp)
                 )
                 Spacer(Modifier.size(24.dp))

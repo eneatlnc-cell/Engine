@@ -3,9 +3,16 @@ package com.engine.ui.theme
 import androidx.compose.ui.graphics.Color
 
 /**
- * M3 色彩体系 (基于蓝色种子生成)
+ * M3 Expressive 色彩体系 (v3.7 "电流紫")
  *
- * 遵循 Material Design 3 色彩角色定义:
+ * 设计意图: 替换 Material 模板蓝为高饱和紫罗兰 —— Gen Z 视觉母语
+ * (Discord / 加密社区同源), 深色为默认场景的年轻化基调。
+ *
+ * 配角策略:
+ * - Secondary 品红: 渐变搭档色 (与 primary 拼 "电流渐变")
+ * - Tertiary 火焰橙: 承接 Spark 加密货币的品牌火色
+ *
+ * 遵循 Material Design 3 色彩角色定义 (token 名与旧版一一对应):
  * - primary / onPrimary / primaryContainer / onPrimaryContainer
  * - secondary / onSecondary / secondaryContainer / onSecondaryContainer
  * - tertiary / onTertiary / tertiaryContainer / onTertiaryContainer
@@ -13,38 +20,38 @@ import androidx.compose.ui.graphics.Color
  * - background / onBackground / surface / onSurface / surfaceVariant / onSurfaceVariant / outline
  */
 
-// ---- Primary (蓝色系) ----
-val EnginePrimary = Color(0xFF0061A4)
+// ---- Primary (电流紫) ----
+val EnginePrimary = Color(0xFF5A2EE8)
 val EngineOnPrimary = Color(0xFFFFFFFF)
-val EnginePrimaryContainer = Color(0xFFD1E4FF)
-val EngineOnPrimaryContainer = Color(0xFF001D36)
+val EnginePrimaryContainer = Color(0xFFEADCFF)
+val EngineOnPrimaryContainer = Color(0xFF23005C)
 
-val EngineDarkPrimary = Color(0xFF9ACBFF)
-val EngineDarkOnPrimary = Color(0xFF00344C)
-val EngineDarkPrimaryContainer = Color(0xFF004C6C)
-val EngineDarkOnPrimaryContainer = Color(0xFFD1E4FF)
+val EngineDarkPrimary = Color(0xFFA98FFF)
+val EngineDarkOnPrimary = Color(0xFF2A1065)
+val EngineDarkPrimaryContainer = Color(0xFF4A36A8)
+val EngineDarkOnPrimaryContainer = Color(0xFFEADCFF)
 
-// ---- Secondary (青色系) ----
-val EngineSecondary = Color(0xFF535F70)
+// ---- Secondary (品红 · 渐变搭档) ----
+val EngineSecondary = Color(0xFF9C4478)
 val EngineOnSecondary = Color(0xFFFFFFFF)
-val EngineSecondaryContainer = Color(0xFFD7E3F7)
-val EngineOnSecondaryContainer = Color(0xFF101C2B)
+val EngineSecondaryContainer = Color(0xFFFFD7EB)
+val EngineOnSecondaryContainer = Color(0xFF3E0727)
 
-val EngineDarkSecondary = Color(0xFFB0C9DE)
-val EngineDarkOnSecondary = Color(0xFF193441)
-val EngineDarkSecondaryContainer = Color(0xFF314A59)
-val EngineDarkOnSecondaryContainer = Color(0xFFD2E5F4)
+val EngineDarkSecondary = Color(0xFFF4A6D8)
+val EngineDarkOnSecondary = Color(0xFF5A1D44)
+val EngineDarkSecondaryContainer = Color(0xFF7B3260)
+val EngineDarkOnSecondaryContainer = Color(0xFFFFD7EB)
 
-// ---- Tertiary (紫色系) ----
-val EngineTertiary = Color(0xFF6B5778)
+// ---- Tertiary (火焰橙 · Spark 品牌色) ----
+val EngineTertiary = Color(0xFFA63D00)
 val EngineOnTertiary = Color(0xFFFFFFFF)
-val EngineTertiaryContainer = Color(0xFFF2DAFF)
-val EngineOnTertiaryContainer = Color(0xFF251431)
+val EngineTertiaryContainer = Color(0xFFFFDBC8)
+val EngineOnTertiaryContainer = Color(0xFF3B0A00)
 
-val EngineDarkTertiary = Color(0xFFC3C4EB)
-val EngineDarkOnTertiary = Color(0xFF2D2E50)
-val EngineDarkTertiaryContainer = Color(0xFF434468)
-val EngineDarkOnTertiaryContainer = Color(0xFFE0E1FF)
+val EngineDarkTertiary = Color(0xFFFFB592)
+val EngineDarkOnTertiary = Color(0xFF571F00)
+val EngineDarkTertiaryContainer = Color(0xFF7D2E00)
+val EngineDarkOnTertiaryContainer = Color(0xFFFFDBC8)
 
 // ---- Error ----
 val EngineError = Color(0xFFBA1A1A)
@@ -57,36 +64,36 @@ val EngineDarkOnError = Color(0xFF690005)
 val EngineDarkErrorContainer = Color(0xFF93000A)
 val EngineDarkOnErrorContainer = Color(0xFFFFDAD6)
 
-// ---- 浅色主题 Neutral ----
-val EngineLightBackground = Color(0xFFFDFCFF)
-val EngineLightOnBackground = Color(0xFF191C1E)
-val EngineLightSurface = Color(0xFFFDFCFF)
-val EngineLightOnSurface = Color(0xFF191C1E)
-val EngineLightSurfaceVariant = Color(0xFFDDE3EA)
-val EngineLightOnSurfaceVariant = Color(0xFF41484D)
-val EngineLightOutline = Color(0xFF72787D)
-val EngineLightSurfaceContainer = Color(0xFFEEF1F4)
+// ---- 浅色主题 Neutral (紫调灰) ----
+val EngineLightBackground = Color(0xFFFDFBFF)
+val EngineLightOnBackground = Color(0xFF1D1B24)
+val EngineLightSurface = Color(0xFFFDFBFF)
+val EngineLightOnSurface = Color(0xFF1D1B24)
+val EngineLightSurfaceVariant = Color(0xFFE7E0F3)
+val EngineLightOnSurfaceVariant = Color(0xFF48454E)
+val EngineLightOutline = Color(0xFF797487)
+val EngineLightSurfaceContainer = Color(0xFFEFEDF5)
 
-// ---- 深色主题 Neutral ----
-val EngineDarkBackground = Color(0xFF191C1E)
-val EngineDarkOnBackground = Color(0xFFE1E2E5)
-val EngineDarkSurface = Color(0xFF191C1E)
-val EngineDarkOnSurface = Color(0xFFE1E2E5)
-val EngineDarkSurfaceVariant = Color(0xFF41484D)
-val EngineDarkOnSurfaceVariant = Color(0xFFC0C7CD)
-val EngineDarkOutline = Color(0xFF8B9196)
-val EngineDarkSurfaceContainer = Color(0xFF2A2F33)
+// ---- 深色主题 Neutral (深空紫黑) ----
+val EngineDarkBackground = Color(0xFF141120)
+val EngineDarkOnBackground = Color(0xFFE6E1F0)
+val EngineDarkSurface = Color(0xFF141120)
+val EngineDarkOnSurface = Color(0xFFE6E1F0)
+val EngineDarkSurfaceVariant = Color(0xFF494460)
+val EngineDarkOnSurfaceVariant = Color(0xFFCAC4DC)
+val EngineDarkOutline = Color(0xFF948F9C)
+val EngineDarkSurfaceContainer = Color(0xFF211D33)
 
-// ---- 消息气泡 (保留用于聊天页面特殊配色) ----
-val EngineLightBubbleMine = Color(0xFF0061A4)
+// ---- 消息气泡 ----
+val EngineLightBubbleMine = Color(0xFF5A2EE8)
 val EngineLightBubbleMineText = Color(0xFFFFFFFF)
-val EngineLightBubblePeer = Color(0xFFE1E2E5)
-val EngineLightBubblePeerText = Color(0xFF191C1E)
+val EngineLightBubblePeer = Color(0xFFEFEDF5)
+val EngineLightBubblePeerText = Color(0xFF1D1B24)
 
-val EngineDarkBubbleMine = Color(0xFF9ACBFF)
-val EngineDarkBubbleMineText = Color(0xFF00344C)
-val EngineDarkBubblePeer = Color(0xFF2A2F33)
-val EngineDarkBubblePeerText = Color(0xFFE1E2E5)
+val EngineDarkBubbleMine = Color(0xFFA98FFF)
+val EngineDarkBubbleMineText = Color(0xFF2A1065)
+val EngineDarkBubblePeer = Color(0xFF211D33)
+val EngineDarkBubblePeerText = Color(0xFFE6E1F0)
 
 // ---- 功能色 (连接状态) ----
 val StatusConnected = Color(0xFF4CAF50)

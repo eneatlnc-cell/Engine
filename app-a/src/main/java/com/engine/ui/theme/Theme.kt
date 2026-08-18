@@ -164,6 +164,7 @@ fun EngineTheme(
     MaterialTheme(
         colorScheme = smoothScheme,
         typography = RobotoTypography,
+        shapes = EngineShapes,   // v3.7: M3E 表情化形状系统
         content = content
     )
 }

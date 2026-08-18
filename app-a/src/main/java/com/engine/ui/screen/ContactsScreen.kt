@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -66,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engine.data.Contact
+import com.engine.ui.components.GradientAvatar
 import com.engine.viewmodel.ContactsViewModel
 import kotlinx.coroutines.launch
 
@@ -294,23 +294,12 @@ private fun ContactItem(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 头像: 昵称首字母, M3 primary 背景
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = contact.nickname.firstOrNull()?.uppercase()
-                    ?: contact.fingerprint.firstOrNull()?.uppercase()
-                    ?: "?",
-                color = MaterialTheme.colorScheme.onPrimary,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
+        // 头像 (v3.7: 指纹渐变 + 超圆, 与聊天列表统一)
+        GradientAvatar(
+            seed = contact.fingerprint,
+            label = contact.nickname.ifBlank { contact.fingerprint },
+            size = 48.dp
+        )
 
         Spacer(modifier = Modifier.size(14.dp))
 

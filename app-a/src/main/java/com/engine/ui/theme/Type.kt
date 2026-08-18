@@ -7,32 +7,44 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /**
- * Roboto 无衬线字体样式
+ * 排版体系 (v3.7 M3 Expressive 强调式)
  *
- * Telegram 风格: Roboto 字体族, 各字号权重层次清晰。
+ * 设计意图: M3E 的排版哲学 = "视觉强调" —— 大标题更大更粗,
+ * 层级差拉开 (编辑风 headline), 正文保持轻盈。
+ * 展示级样式 (headline*) 收紧字距 + ExtraBold, 制造海报感;
+ * 正文沿用可读性优先的宽松行高。
  */
 val RobotoTypography = Typography(
     headlineLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Bold,
-        fontSize = 28.sp,
-        lineHeight = 36.sp
+        fontWeight = FontWeight.ExtraBold,
+        fontSize = 30.sp,
+        lineHeight = 36.sp,
+        letterSpacing = (-0.5).sp
     ),
     headlineMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Bold,
-        fontSize = 22.sp,
-        lineHeight = 28.sp
+        fontSize = 24.sp,
+        lineHeight = 30.sp,
+        letterSpacing = (-0.25).sp
+    ),
+    headlineSmall = TextStyle(
+        fontFamily = FontFamily.SansSerif,
+        fontWeight = FontWeight.Bold,
+        fontSize = 20.sp,
+        lineHeight = 26.sp
     ),
     titleLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.SemiBold,
-        fontSize = 18.sp,
-        lineHeight = 24.sp
+        fontWeight = FontWeight.Bold,
+        fontSize = 19.sp,
+        lineHeight = 26.sp,
+        letterSpacing = 0.1.sp
     ),
     titleMedium = TextStyle(
         fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Medium,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 16.sp,
         lineHeight = 22.sp
     ),
@@ -56,13 +68,13 @@ val RobotoTypography = Typography(
     ),
     labelLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Medium,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 14.sp,
         lineHeight = 20.sp
     ),
     labelSmall = TextStyle(
         fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Normal,
+        fontWeight = FontWeight.Medium,
         fontSize = 11.sp,
         lineHeight = 14.sp
     )
