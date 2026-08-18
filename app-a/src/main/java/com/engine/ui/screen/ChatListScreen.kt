@@ -1,7 +1,22 @@
 package com.engine.ui.screen
 
 import android.app.Activity
-import androidx.compose.animation.core.*
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,7 +26,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brightness4
@@ -69,6 +84,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.engine.EngineApp
 import com.engine.ui.components.ChatListItem
+import com.engine.ui.theme.EngineMotion
 import com.engine.viewmodel.ChatListViewModel
 
 /**
@@ -221,17 +237,49 @@ fun ChatListScreen(
         bottomBar = {
             NavigationBar {
                 bottomNavItems.forEachIndexed { index, item ->
+                    // v3.6: 选中态弹性放大 —— 底部导航的 "活" 感
+                    val navScale by animateFloatAsState(
+                        targetValue = if (selectedTab == index) 1.12f else 1f,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMedium
+                        ),
+                        label = "navScale$index"
+                    )
                     NavigationBarItem(
                         selected = selectedTab == index,
                         onClick = { selectedTab = index },
-                        icon = { Icon(item.icon, contentDescription = item.label) },
+                        icon = {
+                            Icon(
+                                item.icon,
+                                contentDescription = item.label,
+                                modifier = Modifier.graphicsLayer {
+                                    scaleX = navScale
+                                    scaleY = navScale
+                                }
+                            )
+                        },
                         label = { Text(item.label) }
                     )
                 }
             }
         },
         floatingActionButton = {
-            if (selectedTab == 0) {
+            // v3.6: FAB 弹簧出入场 (旧版切 Tab 时瞬现瞬灭)
+            AnimatedVisibility(
+                visible = selectedTab == 0,
+                enter = scaleIn(
+                    initialScale = 0.6f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMedium
+                    )
+                ) + fadeIn(),
+                exit = scaleOut(
+                    targetScale = 0.6f,
+                    animationSpec = tween(140)
+                ) + fadeOut(tween(140))
+            ) {
                 FloatingActionButton(
                     onClick = { selectedTab = 1 }
                 ) {
@@ -245,21 +293,39 @@ fun ChatListScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            when (selectedTab) {
-                0 -> ChatListContent(
-                    uiState = uiState,
-                    searchQuery = searchQuery,
-                    onSearchQueryChange = { searchQuery = it },
-                    onChatClick = { fingerprint ->
-                        navController.navigate("chat/$fingerprint")
-                    }
-                )
-                1 -> ContactsScreen()
-                2 -> KeyBindingScreen(
-                    onSuccess = {
-                        selectedTab = 0
-                    }
-                )
+            // v3.6: Tab 内容交叉淡入 + 轻微缩放 (旧版 when 硬切)
+            AnimatedContent(
+                targetState = selectedTab,
+                transitionSpec = {
+                    (fadeIn(tween(EngineMotion.CONTENT_CROSSFADE_MS)) +
+                        scaleIn(
+                            initialScale = 0.98f,
+                            animationSpec = tween(EngineMotion.CONTENT_CROSSFADE_MS)
+                        )) togetherWith
+                        (fadeOut(tween(EngineMotion.CONTENT_CROSSFADE_MS)) +
+                            scaleOut(
+                                targetScale = 0.98f,
+                                animationSpec = tween(EngineMotion.CONTENT_CROSSFADE_MS)
+                            ))
+                },
+                label = "tabContent"
+            ) { tab ->
+                when (tab) {
+                    0 -> ChatListContent(
+                        uiState = uiState,
+                        searchQuery = searchQuery,
+                        onSearchQueryChange = { searchQuery = it },
+                        onChatClick = { fingerprint ->
+                            navController.navigate("chat/$fingerprint")
+                        }
+                    )
+                    1 -> ContactsScreen()
+                    2 -> KeyBindingScreen(
+                        onSuccess = {
+                            selectedTab = 0
+                        }
+                    )
+                }
             }
         }
     }
@@ -407,9 +473,15 @@ private fun ChatListContent(
             LazyColumn(
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(filteredList) { contact ->
+                itemsIndexed(
+                    filteredList,
+                    key = { _, contact -> contact.fingerprint }
+                ) { index, contact ->
                     ChatListItem(
                         contact = contact,
+                        // v3.6: 错峰入场 —— 逐项淡入上浮 (stagger)
+                        enterDelayMs = (index.coerceAtMost(EngineMotion.ITEM_STAGGER_MAX)) *
+                            EngineMotion.ITEM_STAGGER_MS,
                         onClick = { onChatClick(contact.fingerprint) }
                     )
                 }
