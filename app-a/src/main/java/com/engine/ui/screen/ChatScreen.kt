@@ -38,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -83,6 +84,8 @@ fun ChatScreen(
     }
 
     Scaffold(
+        // v3.8: 透明底 —— 全局渐变背景 (EngineBackground) 一路铺到顶
+        containerColor = Color.Transparent,
         topBar = {
             Column {
                 TopAppBar(
@@ -95,7 +98,9 @@ fun ChatScreen(
                             )
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors()
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent
+                    )
                 )
                 ConnectionStatusBar(state = uiState.connectionState)
             }

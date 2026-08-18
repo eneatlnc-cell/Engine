@@ -5,13 +5,11 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -32,6 +30,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.engine.data.BoundIdentityStore
+import com.engine.ui.components.EngineBackground
 import com.engine.ui.screen.ChatListScreen
 import com.engine.ui.screen.ChatScreen
 import com.engine.ui.screen.LoginScreen
@@ -66,10 +65,9 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             EngineTheme(darkTheme = app.isDarkTheme) {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
+                // v3.8: 统一渐变背景 —— 端点取自插值后的 scheme,
+                // 与所有组件同源同钟, 状态栏同款顶端色 (见 ThemeSync.kt)
+                EngineBackground {
                     LoginGate {
                         val navController = rememberNavController()
 

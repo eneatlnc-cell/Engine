@@ -1,13 +1,11 @@
 package com.engine.ui.screen
 
-import android.app.Activity
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
@@ -18,7 +16,6 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -30,39 +27,28 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Brightness4
-import androidx.compose.material.icons.filled.Brightness6
-import androidx.compose.material.icons.filled.Brightness7
-import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Contacts
-import androidx.compose.material.icons.filled.GroupAdd
-import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sailing
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -76,35 +62,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.engine.EngineApp
 import com.engine.ui.components.ChatListItem
+import com.engine.ui.components.EngineNavBar
+import com.engine.ui.components.EngineTopMenu
 import com.engine.ui.theme.EngineLeafShape
 import com.engine.ui.theme.EngineMotion
 import com.engine.viewmodel.ChatListViewModel
-
-/**
- * 底部导航项
- */
-private data class BottomNavItem(
-    val label: String,
-    val icon: ImageVector
-)
-
-private val bottomNavItems = listOf(
-    BottomNavItem("聊天", Icons.Filled.Chat),
-    BottomNavItem("联系人", Icons.Filled.Contacts),
-    BottomNavItem("密钥", Icons.Filled.Key)
-)
 
 /**
  * 聊天列表主屏幕 (Telegram 2026 风格 + Material 3)
@@ -114,9 +83,11 @@ private val bottomNavItems = listOf(
  * - 底部导航: 聊天 / 联系人 / 密钥
  * - 浮动按钮: 新建联系人 / 搜索
  *
- * 设计参考:
- * - Telegram v12.4 (2026): 全宽搜索框置顶, 滚动隐藏
- * - M3 Expressive: 圆角容器, 药丸形控件
+ * v3.8:
+ * - Scaffold/TopAppBar 透明化, 全局渐变背景 (EngineBackground) 一路铺到顶
+ * - 三点菜单 → EngineTopMenu (不透明无投影, 修 "变色有影子")
+ * - 底部导航 → EngineNavBar (点开变大 / 退出变小)
+ * - 状态栏颜色统一由 EngineSyncedTheme 管理 (与渐变顶端同色)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -139,22 +110,18 @@ fun ChatListScreen(
     var showNewGroupDialog by remember { mutableStateOf(false) }
     var showSparkSheet by remember { mutableStateOf(false) }
 
-    // 状态栏跟随主题
-    val view = LocalView.current
-    val darkTheme = isSystemInDarkTheme()
-    val surfaceColor = MaterialTheme.colorScheme.surface
-    if (!view.isInEditMode) {
-        SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = surfaceColor.toArgb()
-            WindowCompat.getInsetsController(window, view)
-                .isAppearanceLightStatusBars = !darkTheme
-        }
-    }
+    // v3.8: 状态栏颜色与渐变顶端同色, 统一由 EngineSyncedTheme 管理
+    // (原此处的 window.statusBarColor 手写块已删除, 避免双写跳变)
 
     Scaffold(
+        // v3.8: 透明底 —— 让 EngineBackground 的全局渐变一路铺到屏幕顶
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
+                // 顶栏透明: 状态栏 (同渐变顶端色) / 顶栏 / 内容连成一片
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent
+                ),
                 // X (Twitter) 式居中标识: 两侧各占 48dp (左占位 + 右菜单按钮),
                 // 标题在剩余空间内绝对居中; 大写 + 加宽字距强化品牌感
                 navigationIcon = {
@@ -174,7 +141,7 @@ fun ChatListScreen(
                     }
                 },
                 actions = {
-                    // 三点菜单
+                    // 三点菜单 + 自绘下拉面板 (v3.8)
                     Box {
                         IconButton(onClick = { showOverflowMenu = true }) {
                             Icon(
@@ -182,92 +149,24 @@ fun ChatListScreen(
                                 contentDescription = "菜单"
                             )
                         }
-                        DropdownMenu(
+                        EngineTopMenu(
                             expanded = showOverflowMenu,
-                            onDismissRequest = { showOverflowMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = {
-                                    Text(if (app.isDarkTheme) "白天模式" else "夜间模式")
-                                },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    app.toggleTheme()
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = if (app.isDarkTheme) Icons.Filled.Brightness7 else Icons.Filled.Brightness4,
-                                        contentDescription = null
-                                    )
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("新建群组") },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    showNewGroupDialog = true
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Filled.GroupAdd,
-                                        contentDescription = null
-                                    )
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        "Spark",
-                                        color = MaterialTheme.colorScheme.tertiary,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    showSparkSheet = true
-                                },
-                                leadingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Filled.LocalFireDepartment,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.tertiary
-                                    )
-                                }
-                            )
-                        }
+                            onDismiss = { showOverflowMenu = false },
+                            isDark = app.isDarkTheme,
+                            onToggleTheme = { app.toggleTheme() },
+                            onNewGroup = { showNewGroupDialog = true },
+                            onSpark = { showSparkSheet = true }
+                        )
                     }
                 }
             )
         },
         bottomBar = {
-            NavigationBar {
-                bottomNavItems.forEachIndexed { index, item ->
-                    // v3.6: 选中态弹性放大 —— 底部导航的 "活" 感
-                    val navScale by animateFloatAsState(
-                        targetValue = if (selectedTab == index) 1.12f else 1f,
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                            stiffness = Spring.StiffnessMedium
-                        ),
-                        label = "navScale$index"
-                    )
-                    NavigationBarItem(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        icon = {
-                            Icon(
-                                item.icon,
-                                contentDescription = item.label,
-                                modifier = Modifier.graphicsLayer {
-                                    scaleX = navScale
-                                    scaleY = navScale
-                                }
-                            )
-                        },
-                        label = { Text(item.label) }
-                    )
-                }
-            }
+            // v3.8: 点开变大 / 退出变小 (三态弹簧缩放, 见 EngineNavBar)
+            EngineNavBar(
+                selected = selectedTab,
+                onSelect = { selectedTab = it }
+            )
         },
         floatingActionButton = {
             // v3.6: FAB 弹簧出入场 (旧版切 Tab 时瞬现瞬灭)
