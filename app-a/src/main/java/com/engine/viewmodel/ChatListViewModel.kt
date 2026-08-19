@@ -35,12 +35,23 @@ class ChatListViewModel : ViewModel() {
     private val _myFingerprint = MutableStateFlow<String?>(null)
     val myFingerprint: StateFlow<String?> = _myFingerprint.asStateFlow()
 
-    val uiState: StateFlow<ChatListUiState> = combine(
+    val uiState: StateFlow<ChatListUiState> = kotlinx.coroutines.flow.combine(
         contactStore.contacts,
-        _myFingerprint
-    ) { contacts, fingerprint ->
+        _myFingerprint,
+        app.groupStore.groups
+    ) { contacts, fingerprint, groups ->
         ChatListUiState(
-            chatList = contacts,
+            // v3.14: 群会话以伪联系人条目 (fingerprint="grp:<id>") 置顶展示,
+            // 点击直接进入群聊天页, 复用既有路由与消息流水线
+            chatList = groups.sortedByDescending { it.lastMessageTime ?: it.createdAt }
+                .map { g ->
+                    Contact(
+                        fingerprint = com.engine.data.EngineGroup.conversationKey(g.id),
+                        nickname = g.name,
+                        lastMessage = g.lastMessage,
+                        lastMessageTime = g.lastMessageTime ?: g.createdAt
+                    )
+                } + contacts,
             myFingerprint = fingerprint
         )
     }.stateIn(

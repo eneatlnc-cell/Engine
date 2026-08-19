@@ -21,7 +21,9 @@ enum class MessageType {
     ERROR,        // 错误反馈
     ROOM_REGISTER, // v3.14: 群主向中继登记邀请码 → 群主指纹映射
     ROOM_LOOKUP,   // v3.14: 凭邀请码查询群主指纹 (中继目录服务)
-    ROOM_INFO      // v3.14: 中继对 ROOM_* 的统一应答
+    ROOM_INFO,     // v3.14: 中继对 ROOM_* 的统一应答
+    GROUP_MSG,     // v3.14: 群聊消息 (群密钥加密, 按成员扇出, 中继同 MSG 透传)
+    GROUP_CTRL     // v3.14: 群控制信令 (成对加密: 密钥分发/花名册/入群/退群/解散)
 }
 
 /**
@@ -40,7 +42,8 @@ data class MessageEnvelope(
     val target: String? = null,        // 接收方公钥指纹
     val payload: String? = null,       // 加密密文/信令载荷, 中继永不解析
     val seq: Long = 0,                 // 序列号
-    val ts: Long = System.currentTimeMillis()  // 时间戳
+    val ts: Long = System.currentTimeMillis(),  // 时间戳
+    val groupId: String? = null        // v3.14: 群消息路由用 (中继不解析, 仅透传)
 )
 
 /**
@@ -221,6 +224,84 @@ object InviteCode {
     fun isValid(code: String): Boolean =
         code.length == LENGTH && code.all { it in ALPHABET }
 }
+
+// ==================== v3.14: 群组控制协议 ====================
+
+/**
+ * 群成员条目 (随花名册分发)
+ */
+@Serializable
+data class GroupMemberData(
+    val fp: String,                    // 成员身份指纹
+    val nickname: String = "",         // 群内显示名
+    val role: String = "MEMBER"        // GroupRoles: OWNER / ADMIN / MEMBER
+)
+
+/**
+ * 群组三级角色
+ *
+ * - OWNER: 建群者; 唯一有权 分发/轮换群密钥、审批入群、解散
+ * - ADMIN: 预留 (v3.14 未启用; 未来承担邀请/移人)
+ * - MEMBER: 发言 / 退群
+ */
+object GroupRoles {
+    const val OWNER = "OWNER"
+    const val ADMIN = "ADMIN"
+    const val MEMBER = "MEMBER"
+}
+
+/**
+ * GROUP_CTRL 控制动作常量
+ */
+object GroupCtrlActions {
+    /** 群主 → 成员: 群密钥 + 花名册 (入群批准 / 密钥轮换 / 离线补发) */
+    const val KEY = "KEY"
+
+    /** 群主 → 成员: 仅花名册更新 (无密钥变化) */
+    const val ROSTER = "ROSTER"
+
+    /** 申请者 → 群主: 凭邀请码申请入群 (groupId 为空, 群主按 code 匹配) */
+    const val JOIN_REQ = "JOIN_REQ"
+
+    /** 群主 → 申请者: 拒绝入群 (approved=false + reason; 通过以 KEY 落地) */
+    const val JOIN_RESP = "JOIN_RESP"
+
+    /** 成员 → 群主: 主动退群 (群主随之轮换密钥) */
+    const val LEAVE = "LEAVE"
+
+    /** 群主 → 被移除者 (预留, v3.14 未启用) */
+    const val KICK = "KICK"
+
+    /** 成员 → 群主: 群密钥过期/解密失败, 请求补发 */
+    const val KEY_REQ = "KEY_REQ"
+
+    /** 群主 → 全员: 解散群组 */
+    const val DISSOLVE = "DISSOLVE"
+}
+
+/**
+ * GROUP_CTRL 载荷 (v3.14)
+ *
+ * 传输时整体经 1:1 ECDH 会话密钥加密 (与 MSG 同路径),
+ * 中继全程只见密文 —— 群成员表/群密钥对中继零暴露。
+ *
+ * action=KEY 时 keyB64 携带 AES-256 群密钥原始字节 (Base64);
+ * 群密钥每次成员减少时由群主轮换 (keyVersion 递增)。
+ */
+@Serializable
+data class GroupCtrlPayload(
+    val action: String,                        // GroupCtrlActions.*
+    val groupId: String? = null,               // JOIN_REQ 为空 (凭 code 定位群)
+    val groupName: String? = null,
+    val ownerFp: String? = null,
+    val code: String? = null,                  // 邀请码 (JOIN_REQ 携带)
+    val requesterFp: String? = null,           // 申请人指纹 (JOIN_REQ)
+    val approved: Boolean = true,              // JOIN_RESP: false = 拒绝
+    val members: List<GroupMemberData> = emptyList(),  // 花名册 (KEY/ROSTER)
+    val keyB64: String? = null,                // KEY: AES-256 群密钥 (Base64)
+    val keyVersion: Int = 0,
+    val reason: String? = null                 // 拒绝/解散原因
+)
 
 /**
  * 协议常量

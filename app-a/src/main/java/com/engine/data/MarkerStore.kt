@@ -45,12 +45,8 @@ class MarkerStore(context: Context) {
         private const val TAG = "MarkerStore"
         private const val FILE_NAME = "engine_marks.json"
         private const val TMP_SUFFIX = ".tmp"
-
-        /** 单条标记文本上限 (字符): 防异常长消息撑爆文件 */
-        const val MAX_TEXT_CHARS = 2000
-
-        /** 标记物总数上限: 防无限增长 (FIFO 淘汰最旧) */
-        const val MAX_MARKS = 500
+        // v3.16.1: 不设条数/长度上限 —— 标记物由用户自行管理,
+        // UI 侧仅以 "仅存本机, 可随时清理" 简短提示交还控制权
     }
 
     private val file = context.filesDir.resolve(FILE_NAME)
@@ -87,7 +83,7 @@ class MarkerStore(context: Context) {
         _markers.value.any { it.messageId == messageId }
 
     /**
-     * 添加标记 (文本截断 + FIFO 上限淘汰)
+     * 添加标记 (v3.16.1: 不截断, 原文全量快照)
      */
     @Synchronized
     private fun add(message: ChatMessage, peerName: String) {
@@ -95,15 +91,13 @@ class MarkerStore(context: Context) {
             messageId = message.id,
             peerFingerprint = message.peerFingerprint,
             peerName = peerName.ifBlank { "用户 ${message.peerFingerprint.take(8)}" },
-            text = if (message.text.length > MAX_TEXT_CHARS)
-                message.text.take(MAX_TEXT_CHARS) + "…"
-            else message.text,
+            text = message.text,
             isMine = message.isMine,
             messageTimestamp = message.timestamp,
             markedAt = System.currentTimeMillis()
         )
-        // 头插: 最新标记在前; 超限时淘汰末尾 (最旧)
-        val updated = (listOf(item) + _markers.value).take(MAX_MARKS)
+        // 头插: 最新标记在前
+        val updated = listOf(item) + _markers.value
         if (persist(updated)) {
             _markers.value = updated
         }

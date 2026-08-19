@@ -47,6 +47,13 @@ class ChatViewModel(
     private val contactStore = app.contactStore
     private val markerStore = app.markerStore
 
+    /** v3.14: 群会话 (peerFingerprint 形如 "grp:<id>"); 1:1 会话为 null */
+    val isGroup = com.engine.data.EngineGroup.isGroupConversation(peerFingerprint)
+    private val groupId = com.engine.data.EngineGroup.groupIdOf(peerFingerprint)
+
+    /** v3.14: 群信息 (群名/成员数驱动顶栏) */
+    val group = if (isGroup) app.groupStore.groups else null
+
     private val _inputText = MutableStateFlow("")
 
     val uiState: StateFlow<ChatUiState> = combine(
@@ -90,9 +97,11 @@ class ChatViewModel(
             status = MessageStatus.PENDING
         )
 
-        // 写入内存 + 更新联系人最后消息
+        // 写入内存 + 更新会话预览 (群会话由 EngineApp.sendGroupMessage 更新群仓)
         messageStore.addMessage(peerFingerprint, message)
-        contactStore.updateLastMessage(peerFingerprint, text, now)
+        if (!isGroup) {
+            contactStore.updateLastMessage(peerFingerprint, text, now)
+        }
 
         // 清空输入框
         _inputText.value = ""
@@ -122,23 +131,29 @@ class ChatViewModel(
      * v3.16: 标记/取消标记消息
      *
      * 标记 = 将消息快照 (文本+对端+时间) 写入应用私有文件;
-     * 取消 = 从标记物文件中移除。昵称以标记时刻的联系人表为准。
+     * 取消 = 从标记物文件中移除。昵称以标记时刻的联系人表/群信息为准。
      */
     fun toggleMark(message: ChatMessage) {
-        val peerName = contactStore.getContact(peerFingerprint)?.nickname
-            ?: "用户 ${peerFingerprint.take(8)}"
+        val peerName = if (isGroup) {
+            group?.value?.find { it.id == groupId }?.name ?: "群组"
+        } else {
+            contactStore.getContact(peerFingerprint)?.nickname
+                ?: "用户 ${peerFingerprint.take(8)}"
+        }
         markerStore.toggle(message, peerName)
     }
 
     /**
-     * 实际发送逻辑 (v2: 统一委托 EngineApp.sendMessageToPeer)
-     *
-     * 统一入口保证:
-     * - seq 由 App 级单调计数器分配并纳入 GCM AAD (防重放)
-     * - 无会话密钥时自动发起签名信令交换, 消息标记失败待密钥建立后补发
+     * 实际发送逻辑 (统一委托 EngineApp):
+     * - 1:1: sendMessageToPeer (成对密钥 + seq AAD)
+     * - v3.14 群: sendGroupMessage (群密钥加密一次 + 按成员扇出)
      */
     private fun doSend(message: ChatMessage) {
-        app.sendMessageToPeer(peerFingerprint, message.id, message.text)
+        if (isGroup) {
+            app.sendGroupMessage(groupId, message.id, message.text)
+        } else {
+            app.sendMessageToPeer(peerFingerprint, message.id, message.text)
+        }
     }
 
     /**

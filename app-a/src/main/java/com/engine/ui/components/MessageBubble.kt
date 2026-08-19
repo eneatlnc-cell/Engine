@@ -113,6 +113,20 @@ fun MessageBubble(
                     )
                 )
         ) {
+            // v3.14: 群消息发送者名 (仅收到的消息携带; 1:1 会话为 null 不显示)
+            if (!isMine) {
+                message.senderName?.let { sender ->
+                    Text(
+                        text = sender,
+                        color = if (isMine) MaterialTheme.colorScheme.onPrimary
+                        else MaterialTheme.colorScheme.primary,
+                        fontSize = 12.sp,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+                    )
+                    Spacer(modifier = Modifier.size(2.dp))
+                }
+            }
+
             // 消息文本
             Text(
                 text = message.text,

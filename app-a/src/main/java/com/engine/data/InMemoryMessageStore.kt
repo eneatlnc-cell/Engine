@@ -19,11 +19,12 @@ enum class MessageStatus {
  * 聊天消息数据类 (纯内存, 无持久化)
  *
  * @param id              消息唯一 ID
- * @param peerFingerprint 对方公钥指纹 (会话标识)
+ * @param peerFingerprint 对方公钥指纹 (会话标识; 群会话为 "grp:<groupId>")
  * @param text            消息明文
  * @param isMine          是否为己方发送
  * @param timestamp       毫秒时间戳
  * @param status          发送状态
+ * @param senderName      v3.14: 群消息发送者显示名 (1:1 会话为 null)
  */
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
@@ -31,7 +32,8 @@ data class ChatMessage(
     val text: String,
     val isMine: Boolean,
     val timestamp: Long = System.currentTimeMillis(),
-    val status: MessageStatus = MessageStatus.PENDING
+    val status: MessageStatus = MessageStatus.PENDING,
+    val senderName: String? = null
 )
 
 /**

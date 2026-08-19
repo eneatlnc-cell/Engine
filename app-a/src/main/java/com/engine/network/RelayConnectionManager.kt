@@ -57,6 +57,28 @@ interface RelayCallback {
     /** 收到 ERROR 消息 */
     fun onError(code: String, message: String)
 
+    /**
+     * 收到 GROUP_MSG 群聊消息 (v3.14, 群密钥密文)
+     *
+     * 上层须: 校验 target==本机指纹 → 取 groupId 对应群密钥解密 →
+     * 按 (groupId, source) 单调 seq 防重放
+     */
+    fun onGroupMessage(source: String, target: String?, groupId: String, payload: String, seq: Long) {}
+
+    /**
+     * 收到 GROUP_CTRL 群控制信令 (v3.14, 1:1 会话密钥密文)
+     *
+     * 上层须: 成对解密后按 action 分发 (KEY/ROSTER/JOIN_REQ/LEAVE/...)
+     */
+    fun onGroupCtrl(source: String, target: String?, groupId: String?, payload: String, seq: Long) {}
+
+    /**
+     * 收到 ROOM_INFO 中继目录应答 (v3.14)
+     *
+     * 登记 (ROOM_REGISTER) 与查询 (ROOM_LOOKUP) 的统一回执。
+     */
+    fun onRoomInfo(info: com.securesocial.core.protocol.RoomInfoPayload) {}
+
     /** 连接成功 (挑战-应答认证通过, 收到 HELLO ack) */
     fun onConnected()
 
@@ -203,6 +225,52 @@ class RelayConnectionManager {
         return send(json)
     }
 
+    // ==================== v3.14: 群组 ====================
+
+    /**
+     * 群聊消息 (同一份群密文扇出给一位成员)
+     */
+    fun sendGroupMsg(target: String, groupId: String, payload: String, seq: Long): Boolean {
+        val json = ProtocolSerializer.encodeGroupMsg(
+            source = myFingerprint ?: return false,
+            target = target,
+            groupId = groupId,
+            payload = payload,
+            seq = seq
+        )
+        return send(json)
+    }
+
+    /**
+     * 群控制信令 (1:1 会话密钥密文)
+     */
+    fun sendGroupCtrl(target: String, groupId: String?, payload: String, seq: Long): Boolean {
+        val json = ProtocolSerializer.encodeGroupCtrl(
+            source = myFingerprint ?: return false,
+            target = target,
+            groupId = groupId,
+            payload = payload,
+            seq = seq
+        )
+        return send(json)
+    }
+
+    /**
+     * 群主登记邀请码 (ROOM_REGISTER)
+     */
+    fun sendRoomRegister(code: String): Boolean {
+        val fp = myFingerprint ?: return false
+        return send(ProtocolSerializer.encodeRoomRegister(fp, code))
+    }
+
+    /**
+     * 凭邀请码查询群主指纹 (ROOM_LOOKUP)
+     */
+    fun sendRoomLookup(code: String): Boolean {
+        val fp = myFingerprint ?: return false
+        return send(ProtocolSerializer.encodeRoomLookup(fp, code))
+    }
+
     /**
      * 发送原始 JSON 字符串 (须已通过认证)
      */
@@ -323,11 +391,32 @@ class RelayConnectionManager {
             // 客户端不应收到对端 HELLO_AUTH; 忽略
             MessageType.HELLO_AUTH -> Unit
 
-            // v3.14: 群组目录应答 (ROOM_INFO) 与登记请求 (ROOM_*)
-            // 由群组功能的专用流程处理, 消息主循环暂忽略
+            // v3.14: 群聊消息 → 上层按 groupId 取群密钥解密
+            MessageType.GROUP_MSG -> {
+                val source = envelope.source ?: return
+                val payload = envelope.payload ?: return
+                val gid = envelope.groupId ?: return
+                callback?.onGroupMessage(source, envelope.target, gid, payload, envelope.seq)
+            }
+
+            // v3.14: 群控制信令 → 上层成对解密后按 action 分发
+            MessageType.GROUP_CTRL -> {
+                val source = envelope.source ?: return
+                val payload = envelope.payload ?: return
+                callback?.onGroupCtrl(source, envelope.target, envelope.groupId, payload, envelope.seq)
+            }
+
+            // v3.14: 中继目录应答 (登记/查询回执)
+            MessageType.ROOM_INFO -> {
+                val payload = envelope.payload ?: return
+                ProtocolSerializer.decodeRoomInfoPayload(payload)?.let {
+                    callback?.onRoomInfo(it)
+                }
+            }
+
+            // 客户端不应收到 ROOM_REGISTER/ROOM_LOOKUP; 忽略
             MessageType.ROOM_REGISTER,
-            MessageType.ROOM_LOOKUP,
-            MessageType.ROOM_INFO -> Unit
+            MessageType.ROOM_LOOKUP -> Unit
         }
     }
 

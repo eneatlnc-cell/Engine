@@ -199,4 +199,62 @@ object ProtocolSerializer {
     fun decodeRoomInfoPayload(payload: String): RoomInfoPayload? = try {
         json.decodeFromString(RoomInfoPayload.serializer(), payload)
     } catch (e: Exception) { null }
+
+    // ==================== v3.14: 群组消息与控制 ====================
+
+    /**
+     * GROUP_MSG - 群聊消息 (发送方 → 每位成员各一封, 群密钥密文)
+     *
+     * payload 为同一份群密钥密文 (AAD 绑定 gid+发送者+seq, 与接收者无关),
+     * 因此扇出 N 人只需加密一次。
+     */
+    fun encodeGroupMsg(
+        source: String,
+        target: String,
+        groupId: String,
+        payload: String,
+        seq: Long
+    ): String {
+        return encode(MessageEnvelope(
+            type = MessageType.GROUP_MSG,
+            source = source,
+            target = target,
+            payload = payload,
+            seq = seq,
+            groupId = groupId
+        ))
+    }
+
+    /**
+     * GROUP_CTRL - 群控制信令 (1:1 会话密钥密文, 中继同 MSG 透传)
+     */
+    fun encodeGroupCtrl(
+        source: String,
+        target: String,
+        groupId: String?,
+        payload: String,
+        seq: Long
+    ): String {
+        return encode(MessageEnvelope(
+            type = MessageType.GROUP_CTRL,
+            source = source,
+            target = target,
+            payload = payload,
+            seq = seq,
+            groupId = groupId
+        ))
+    }
+
+    /**
+     * 解析 GROUP_CTRL 明文 (解密后调用)
+     */
+    fun decodeGroupCtrlPayload(payload: String): GroupCtrlPayload? = try {
+        json.decodeFromString(GroupCtrlPayload.serializer(), payload)
+    } catch (e: Exception) { null }
+
+    /**
+     * GROUP_CTRL 明文序列化 (加密前调用)
+     */
+    fun encodeGroupCtrlJson(ctrl: GroupCtrlPayload): String =
+        json.encodeToString(GroupCtrlPayload.serializer(), ctrl)
 }

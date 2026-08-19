@@ -80,9 +80,13 @@ fun ChatScreen(
     )
     val uiState by viewModel.uiState.collectAsState()
 
-    // 获取对方昵称
-    val contact = EngineApp.get().contactStore.getContact(peerFingerprint)
-    val peerName = contact?.nickname ?: "用户 ${peerFingerprint.take(8)}"
+    // 会话标题: 群会话显示 群名+成员数 (v3.14); 1:1 显示对方昵称
+    val app = EngineApp.get()
+    val groups by app.groupStore.groups.collectAsState()
+    val groupInfo = if (viewModel.isGroup) groups.find { it.id == viewModel.peerFingerprint.removePrefix("grp:") } else null
+    val peerName = groupInfo?.name
+        ?: app.contactStore.getContact(peerFingerprint)?.nickname
+        ?: "用户 ${peerFingerprint.take(8)}"
 
     val listState = rememberLazyListState()
 
@@ -102,7 +106,20 @@ fun ChatScreen(
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text(peerName, fontWeight = FontWeight.SemiBold) },
+                    title = {
+                        if (groupInfo != null) {
+                            Column {
+                                Text(groupInfo.name, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    text = "${groupInfo.members.size} 名成员",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        } else {
+                            Text(peerName, fontWeight = FontWeight.SemiBold)
+                        }
+                    },
                     navigationIcon = {
                         IconButton(onClick = { navController.popBackStack() }) {
                             Icon(

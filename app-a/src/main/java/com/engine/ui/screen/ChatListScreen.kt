@@ -171,7 +171,8 @@ fun ChatListScreen(
         onToggleTheme = { app.toggleTheme() },
         fingerprint = boundFingerprint,
         onOpenDid = { /* TODO(v3.12): DID 详情页 */ },
-        onOpenGroups = { /* TODO(v3.12): 群组管理页 */ },
+        // v3.14: 群组管理页已落地
+        onOpenGroups = { navController.navigate("groups") },
         // v3.16: 标记物列表页已落地
         onOpenMarks = { navController.navigate("marks") },
     ) {
@@ -408,23 +409,9 @@ fun ChatListScreen(
         }
     }
 
-    // 新建群组对话框 (占位)
+    // 新建群组对话框 (v3.14: 真实流程 —— 群名/选成员/邀请码)
     if (showNewGroupDialog) {
-        AlertDialog(
-            onDismissRequest = { showNewGroupDialog = false },
-            title = { Text("新建群组") },
-            text = {
-                Text(
-                    "群组功能即将上线\n通过群组标签 (RoomTag) 创建临时广播频道",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { showNewGroupDialog = false }) {
-                    Text("知道了")
-                }
-            }
-        )
+        NewGroupDialog(onDismiss = { showNewGroupDialog = false })
     }
 
     // Spark 底部弹窗 (v3.11: 三卡片重构, 燃料讲解文字全部移除)

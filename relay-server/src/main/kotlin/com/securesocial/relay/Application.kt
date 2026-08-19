@@ -125,8 +125,12 @@ fun Application.configureRouting() {
                     val envelope = ProtocolSerializer.decode(raw) ?: continue
 
                     // v2: 发送方身份强校验 —— 消息只能以自己的注册身份发出
+                    // v3.14: GROUP_MSG / GROUP_CTRL 与 MSG 同路径透传 (中继零群组状态)
                     when (envelope.type) {
-                        MessageType.MSG, MessageType.SIGNAL -> {
+                        MessageType.MSG,
+                        MessageType.SIGNAL,
+                        MessageType.GROUP_MSG,
+                        MessageType.GROUP_CTRL -> {
                             if (envelope.source != node.fingerprint) {
                                 logger.warn("SOURCE_MISMATCH: conn=${node.fingerprint.take(8)}... claims=${envelope.source?.take(8)}...")
                                 send(Frame.Text(ProtocolSerializer.encodeError(

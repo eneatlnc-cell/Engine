@@ -14,6 +14,7 @@ import com.engine.data.InMemoryMessageStore
 import com.engine.data.MessageStatus
 import com.engine.data.ChatMessage
 import com.engine.data.SessionManager
+import com.engine.data.toMember
 import com.engine.ipc.AppBIpcClient
 import com.engine.network.ConnectionState
 import com.engine.network.RelayCallback
@@ -66,6 +67,29 @@ class EngineApp : Application() {
 
     // v3.16: 标记物仓库 — 用户显式收藏的消息快照 (应用唯一持久化数据)
     val markerStore by lazy { com.engine.data.MarkerStore(this) }
+
+    // v3.14: 群组 (纯内存 —— 与消息/联系人同为易失态, 退出即焚)
+    val groupStore = com.engine.data.GroupStore()
+    private val groupCrypto = com.engine.crypto.GroupCryptoManager()
+
+    // ---- v3.14: 群消息防重放 ((groupId:source) → 已见最大 seq) ----
+    private val lastGroupSeq = ConcurrentHashMap<String, Long>()
+
+    // ---- v3.14: 待发群控制信令 (peer → 队列; 会话密钥建立后冲刷) ----
+    private val pendingCtrlQueue = ConcurrentHashMap<String, MutableList<com.securesocial.core.protocol.GroupCtrlPayload>>()
+
+    /** v3.14: 邀请码查询结果 (入群对话框消费; null = 无待处理结果) */
+    val roomLookupResult = MutableStateFlow<com.securesocial.core.protocol.RoomInfoPayload?>(null)
+
+    /** v3.14: 当前待入群的邀请码 (用于匹配 ROOM_INFO 回执) */
+    @Volatile
+    private var pendingJoinCode: String? = null
+
+    /** v3.14: KEY_REQ 节流 (groupId → 上次请求时间) */
+    private val lastKeyReqAt = ConcurrentHashMap<String, Long>()
+
+    /** v3.14: 邀请码登记冲突重试计数 (groupId → 已重试次数) */
+    private val inviteRetryCount = ConcurrentHashMap<String, Int>()
 
     private val aesGcm = AesGcmCipher()
     private val b64e = Base64.getEncoder()
@@ -207,6 +231,9 @@ class EngineApp : Application() {
         /** 挑战签名失败后的退避窗口 (v3.4: 防 Vault 不可用时指纹框风暴) */
         private const val CHALLENGE_FAIL_BACKOFF_MS = 15_000L
 
+        /** v3.14: 群密钥补发请求节流 (防解密失败风暴) */
+        private const val KEY_REQ_THROTTLE_MS = 10_000L
+
         /**
          * 中继服务器地址 (v2: 经 BuildConfig 配置, 支持生产 VPS wss:// 地址)
          * 构建时以 -PrelayUrl=... 覆盖, 详见 README 部署章节
@@ -329,6 +356,19 @@ class EngineApp : Application() {
 
             override fun onError(code: String, message: String) {
                 Log.w(TAG, "Relay error: $code - $message")
+            }
+
+            // v3.14: 群消息/群控制/目录回执
+            override fun onGroupMessage(source: String, target: String?, groupId: String, payload: String, seq: Long) {
+                handleIncomingGroupMsg(source, target, groupId, payload, seq)
+            }
+
+            override fun onGroupCtrl(source: String, target: String?, groupId: String?, payload: String, seq: Long) {
+                handleIncomingGroupCtrl(source, target, groupId, payload, seq)
+            }
+
+            override fun onRoomInfo(info: com.securesocial.core.protocol.RoomInfoPayload) {
+                handleRoomInfo(info)
             }
 
             override fun onConnected() {
@@ -507,6 +547,8 @@ class EngineApp : Application() {
 
             // 会话密钥建立后自动补发失败消息 (首条消息体验)
             resendFailedMessages(source)
+            // v3.14: 冲刷该对端的待发群控制信令 (入群申请/密钥请求等)
+            flushPendingCtrls(source)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to process signal from $source")
         }
@@ -581,6 +623,455 @@ class EngineApp : Application() {
             messageStore.updateMessageStatus(msg.id, MessageStatus.PENDING)
             sendMessageToPeer(peerFingerprint, msg.id, msg.text)
         }
+    }
+
+    // ==================== v3.14: 群组编排 ====================
+
+    /**
+     * 建群 (群主侧)
+     *
+     * 1. 生成群 ID + AES-256 群密钥 (v1) + 8 位邀请码
+     * 2. 向中继登记 邀请码 → 群主指纹 (回执异步, 冲突自动换码重试)
+     * 3. 向每位被邀成员发送 KEY 控制信令 (经 1:1 会话密钥加密;
+     *    无会话者自动排队并发起 ECDH 交换, 建立后冲刷)
+     *
+     * @return 群 ID
+     */
+    fun createGroup(name: String, memberFps: List<String>): String {
+        val myFp = sessionManager.identityFingerprint
+            ?: throw IllegalStateException("No identity")
+        val gid = groupStore.newGroupId()
+        val key = groupCrypto.generateGroupKey()
+        val me = com.engine.data.GroupMember(myFp, "我", com.securesocial.core.protocol.GroupRoles.OWNER)
+        val others = memberFps.filter { it != myFp }.distinct().map { fp ->
+            com.engine.data.GroupMember(
+                fp = fp,
+                nickname = contactStore.getContact(fp)?.nickname ?: "用户 ${fp.take(8)}",
+                role = com.securesocial.core.protocol.GroupRoles.MEMBER
+            )
+        }
+        val group = com.engine.data.EngineGroup(
+            id = gid,
+            name = name.ifBlank { "新群组" },
+            ownerFp = myFp,
+            myRole = com.securesocial.core.protocol.GroupRoles.OWNER,
+            members = listOf(me) + others,
+            groupKey = key,
+            keyVersion = 1,
+            inviteCode = com.securesocial.core.protocol.InviteCode.generate(),
+            inviteConfirmed = false,
+            createdAt = System.currentTimeMillis()
+        )
+        groupStore.upsert(group)
+
+        // 中继目录登记 (异步回执; CODE_TAKEN 自动换码重试)
+        group.inviteCode?.let { relayManager.sendRoomRegister(it) }
+
+        // 密钥分发 (无会话密钥的对端自动排队 + ECDH)
+        group.members.map { it.fp }.filter { it != myFp }.forEach { fp ->
+            sendGroupCtrlTo(fp, keyCtrlFor(group))
+        }
+        return gid
+    }
+
+    /**
+     * 凭邀请码申请入群 (成员侧)
+     *
+     * ROOM_LOOKUP → 群主指纹 → JOIN_REQ 控制信令;
+     * 群主在线收到即自动批准 (KEY 分发落地)。
+     * 结果经 [roomLookupResult] 异步暴露给 UI。
+     */
+    fun joinByInviteCode(rawCode: String): Boolean {
+        val code = rawCode.trim().uppercase()
+        val myFp = sessionManager.identityFingerprint ?: return false
+        if (!com.securesocial.core.protocol.InviteCode.isValid(code)) {
+            roomLookupResult.value = com.securesocial.core.protocol.RoomInfoPayload(
+                ok = false, code = code, error = com.securesocial.core.protocol.GroupErrorCodes.INVALID_CODE
+            )
+            return false
+        }
+        roomLookupResult.value = null
+        pendingJoinCode = code
+        val sent = relayManager.sendRoomLookup(code)
+        if (!sent) {
+            pendingJoinCode = null
+            roomLookupResult.value = com.securesocial.core.protocol.RoomInfoPayload(
+                ok = false, code = code, error = com.securesocial.core.protocol.ErrorCodes.UNAUTHORIZED
+            )
+        }
+        Log.i(TAG, "Room lookup sent for code $code by ${myFp.take(8)}...")
+        return sent
+    }
+
+    /**
+     * 中继目录回执: 入群查询结果 / 邀请码登记结果
+     */
+    private fun handleRoomInfo(info: com.securesocial.core.protocol.RoomInfoPayload) {
+        val myFp = sessionManager.identityFingerprint ?: return
+
+        // 分支 1: 入群查询回执
+        val pending = pendingJoinCode
+        if (pending != null && info.code == pending) {
+            pendingJoinCode = null
+            roomLookupResult.value = info
+            if (info.ok && info.ownerFingerprint != null && info.ownerFingerprint != myFp) {
+                sendGroupCtrlTo(
+                    info.ownerFingerprint!!,
+                    com.securesocial.core.protocol.GroupCtrlPayload(
+                        action = com.securesocial.core.protocol.GroupCtrlActions.JOIN_REQ,
+                        code = pending,
+                        requesterFp = myFp
+                    )
+                )
+            }
+            return
+        }
+
+        // 分支 2: 群主侧登记回执
+        val group = groupStore.findByInviteCode(info.code) ?: return
+        if (group.inviteConfirmed) return
+        if (info.ok) {
+            groupStore.setInviteConfirmed(group.id, true)
+            Log.i(TAG, "Invite code registered: ${info.code}")
+        } else if (info.error == com.securesocial.core.protocol.GroupErrorCodes.CODE_TAKEN) {
+            // 冲突: 换码重登记 (最多 3 次)
+            val attempts = inviteRetryCount[group.id] ?: 0
+            if (attempts < 3) {
+                inviteRetryCount[group.id] = attempts + 1
+                val newCode = com.securesocial.core.protocol.InviteCode.generate()
+                groupStore.updateInviteCode(group.id, newCode, false)
+                relayManager.sendRoomRegister(newCode)
+            }
+        }
+    }
+
+    /**
+     * 发送群消息 (成员侧)
+     *
+     * 群密钥加密一次 (AAD 与接收者无关) → 按成员扇出同一份密文;
+     * 任一投递成功即视为已发送 (中继离线即丢弃, 无离线补投)。
+     */
+    fun sendGroupMessage(groupId: String, messageId: String, text: String) {
+        val myFp = sessionManager.identityFingerprint ?: return
+        val group = groupStore.getGroup(groupId) ?: return
+        val key = group.groupKey ?: run {
+            messageStore.updateMessageStatus(messageId, MessageStatus.FAILED)
+            return
+        }
+        val targets = group.members.map { it.fp }.filter { it != myFp }
+        val seq = msgSeqCounter.incrementAndGet()
+        val aad = groupCrypto.buildGroupAad(groupId, myFp, seq)
+        val ciphertext = try {
+            groupCrypto.encrypt(text, key, aad)
+        } catch (e: Exception) {
+            messageStore.updateMessageStatus(messageId, MessageStatus.FAILED)
+            return
+        }
+        val anySent = targets.isEmpty() ||
+                targets.any { relayManager.sendGroupMsg(it, groupId, ciphertext, seq) }
+        messageStore.updateMessageStatus(
+            messageId,
+            if (anySent) MessageStatus.SENT else MessageStatus.FAILED
+        )
+        groupStore.updateLastMessage(groupId, text, System.currentTimeMillis())
+    }
+
+    /**
+     * 收到群消息: 群密钥解密 + (groupId, source) 防重放
+     */
+    private fun handleIncomingGroupMsg(source: String, target: String?, groupId: String, payload: String, seq: Long) {
+        try {
+            val myFp = sessionManager.identityFingerprint ?: return
+            if (target != null && target != myFp) return
+            val group = groupStore.getGroup(groupId) ?: return
+            val key = group.groupKey ?: return
+
+            val seqKey = "$groupId:$source"
+            if (seq <= (lastGroupSeq[seqKey] ?: 0L)) return
+
+            val aad = groupCrypto.buildGroupAad(groupId, source, seq)
+            val text = try {
+                groupCrypto.decrypt(payload, key, aad)
+            } catch (e: Exception) {
+                // 密钥可能落后于群主轮换 → 请求补发 (节流)
+                maybeRequestGroupKey(group)
+                return
+            }
+            lastGroupSeq[seqKey] = seq
+
+            val senderName = group.members.find { it.fp == source }?.nickname
+                ?: "用户 ${source.take(8)}"
+            val convKey = com.engine.data.EngineGroup.conversationKey(groupId)
+            val msg = ChatMessage(
+                peerFingerprint = convKey,
+                text = text,
+                isMine = false,
+                timestamp = System.currentTimeMillis(),
+                status = MessageStatus.DELIVERED,
+                senderName = senderName
+            )
+            messageStore.addMessage(convKey, msg)
+            groupStore.updateLastMessage(groupId, "$senderName: $text", msg.timestamp)
+        } catch (e: Exception) {
+            Log.e(TAG, "Group message handling failed: ${e.message}")
+        }
+    }
+
+    /**
+     * 收到群控制信令: 成对解密后按 action 分发
+     */
+    private fun handleIncomingGroupCtrl(source: String, target: String?, groupId: String?, payload: String, seq: Long) {
+        val myFp = sessionManager.identityFingerprint ?: return
+        if (target != null && target != myFp) return
+
+        // 与 MSG 共用同一单调计数器做防重放
+        if (seq <= (lastSeqBySource[source] ?: 0L)) return
+        val aad = aesGcm.buildMessageAad(source, myFp, seq)
+        val plaintext = try {
+            cryptoManager.decryptMessage(payload, source, aad)
+        } catch (e: Exception) {
+            return
+        }
+        lastSeqBySource[source] = seq
+
+        val ctrl = ProtocolSerializer.decodeGroupCtrlPayload(plaintext) ?: return
+        val A = com.securesocial.core.protocol.GroupCtrlActions
+
+        when (ctrl.action) {
+            // 密钥分发: 首次到达 = 入群成功
+            A.KEY -> applyGroupKey(ctrl)
+
+            // 花名册更新 (无密钥变化)
+            A.ROSTER -> {
+                val gid = ctrl.groupId ?: return
+                val group = groupStore.getGroup(gid) ?: return
+                groupStore.updateRoster(
+                    gid,
+                    ctrl.groupName ?: group.name,
+                    ctrl.members.map { it.toMember() }
+                )
+            }
+
+            // 群主侧: 入群申请 (凭邀请码匹配群, v3.14 自动批准)
+            A.JOIN_REQ -> {
+                val code = ctrl.code ?: return
+                val group = groupStore.findByInviteCode(code) ?: return
+                if (!group.isOwner) return
+                if (group.members.any { it.fp == source }) return
+
+                val nickname = contactStore.getContact(source)?.nickname
+                    ?: ctrl.requesterFp?.let { "用户 ${it.take(8)}" }
+                    ?: "用户 ${source.take(8)}"
+                val updated = group.members +
+                        com.engine.data.GroupMember(source, nickname, com.securesocial.core.protocol.GroupRoles.MEMBER)
+                groupStore.setMembers(group.id, updated)
+
+                // 新成员: 全量 KEY; 既有成员: ROSTER
+                val fresh = groupStore.getGroup(group.id) ?: return
+                sendGroupCtrlTo(source, keyCtrlFor(fresh))
+                val rosterCtrl = ctrlFor(fresh, A.ROSTER)
+                fresh.members.map { it.fp }
+                    .filter { it != myFp && it != source }
+                    .forEach { sendGroupCtrlTo(it, rosterCtrl) }
+                Log.i(TAG, "Group ${group.id.take(8)}... member joined: ${source.take(8)}...")
+            }
+
+            // 群主侧: 成员退群 → 轮换密钥
+            A.LEAVE -> {
+                val gid = ctrl.groupId ?: return
+                val group = groupStore.getGroup(gid) ?: return
+                if (!group.isOwner) return
+                val remaining = group.members.filterNot { it.fp == source }
+                if (remaining.size == group.members.size) return
+                groupStore.setMembers(gid, remaining)
+                rotateGroupKey(gid)
+                Log.i(TAG, "Group $gid member left: ${source.take(8)}...")
+            }
+
+            // 群主侧: 密钥补发请求 (离线成员追上轮换)
+            A.KEY_REQ -> {
+                val gid = ctrl.groupId ?: return
+                val group = groupStore.getGroup(gid) ?: return
+                if (!group.isOwner) return
+                if (group.members.any { it.fp == source }) {
+                    sendGroupCtrlTo(source, keyCtrlFor(group))
+                }
+            }
+
+            // 成员侧: 解散
+            A.DISSOLVE -> {
+                val gid = ctrl.groupId ?: return
+                val group = groupStore.getGroup(gid) ?: return
+                if (group.ownerFp == source) {
+                    groupStore.remove(gid)
+                    messageStore.clearSession(com.engine.data.EngineGroup.conversationKey(gid))
+                    Log.i(TAG, "Group $gid dissolved by owner")
+                }
+            }
+
+            // 成员侧: 被移除 (预留; 协议先行)
+            A.KICK -> {
+                val gid = ctrl.groupId ?: return
+                groupStore.getGroup(gid)?.let {
+                    if (it.ownerFp == source && !it.isOwner) {
+                        groupStore.remove(gid)
+                        messageStore.clearSession(com.engine.data.EngineGroup.conversationKey(gid))
+                    }
+                }
+            }
+
+            // 成员侧: 入群被拒 (v3.14 自动批准, 此路径预留)
+            A.JOIN_RESP -> {
+                Log.i(TAG, "Join rejected: ${ctrl.reason}")
+            }
+        }
+    }
+
+    /** KEY 分发落地: 首次 = 入群成功建立群; 再次 = 轮换/补发 */
+    private fun applyGroupKey(ctrl: com.securesocial.core.protocol.GroupCtrlPayload) {
+        val gid = ctrl.groupId ?: return
+        val myFp = sessionManager.identityFingerprint ?: return
+        val members = ctrl.members.map { it.toMember() }
+        val key = ctrl.keyB64?.let { groupCrypto.base64ToKey(it) }
+        val myRole = if (ctrl.ownerFp == myFp)
+            com.securesocial.core.protocol.GroupRoles.OWNER
+        else com.securesocial.core.protocol.GroupRoles.MEMBER
+
+        val existing = groupStore.getGroup(gid)
+        if (existing == null) {
+            groupStore.upsert(
+                com.engine.data.EngineGroup(
+                    id = gid,
+                    name = ctrl.groupName ?: "群组",
+                    ownerFp = ctrl.ownerFp ?: return,
+                    myRole = myRole,
+                    members = members,
+                    groupKey = key,
+                    keyVersion = ctrl.keyVersion,
+                    inviteCode = null,
+                    inviteConfirmed = false,
+                    createdAt = System.currentTimeMillis()
+                )
+            )
+            Log.i(TAG, "Joined group ${gid.take(8)}... (${members.size} members)")
+        } else {
+            groupStore.updateRoster(gid, ctrl.groupName ?: existing.name, members, ctrl.keyVersion, key)
+        }
+    }
+
+    /** 群主: 轮换群密钥并对余员重发 KEY */
+    private fun rotateGroupKey(groupId: String) {
+        val myFp = sessionManager.identityFingerprint ?: return
+        groupStore.rotateKey(groupId, groupCrypto.generateGroupKey())
+        val fresh = groupStore.getGroup(groupId) ?: return
+        fresh.members.map { it.fp }
+            .filter { it != myFp }
+            .forEach { sendGroupCtrlTo(it, keyCtrlFor(fresh)) }
+    }
+
+    /** 构造群主侧 KEY 控制信令 (携带密钥 + 花名册) */
+    private fun keyCtrlFor(group: com.engine.data.EngineGroup): com.securesocial.core.protocol.GroupCtrlPayload =
+        ctrlFor(group, com.securesocial.core.protocol.GroupCtrlActions.KEY, includeKey = true)
+
+    private fun ctrlFor(
+        group: com.engine.data.EngineGroup,
+        action: String,
+        includeKey: Boolean = false
+    ): com.securesocial.core.protocol.GroupCtrlPayload {
+        return com.securesocial.core.protocol.GroupCtrlPayload(
+            action = action,
+            groupId = group.id,
+            groupName = group.name,
+            ownerFp = group.ownerFp,
+            members = group.members.map {
+                com.securesocial.core.protocol.GroupMemberData(it.fp, it.nickname, it.role)
+            },
+            keyB64 = if (includeKey) group.groupKey?.let { groupCrypto.keyToBase64(it) } else null,
+            keyVersion = group.keyVersion
+        )
+    }
+
+    /**
+     * 发送群控制信令 (1:1 会话密钥加密)
+     *
+     * 无会话密钥时排队并自动发起 ECDH 交换, 建立后由
+     * flushPendingCtrls 冲刷 —— 入群申请等异步流程不丢信令。
+     */
+    private fun sendGroupCtrlTo(peerFp: String, ctrl: com.securesocial.core.protocol.GroupCtrlPayload): Boolean {
+        val myFp = sessionManager.identityFingerprint ?: return false
+        if (cryptoManager.hasSessionKey(peerFp)) {
+            val seq = msgSeqCounter.incrementAndGet()
+            val aad = aesGcm.buildMessageAad(myFp, peerFp, seq)
+            val ciphertext = try {
+                cryptoManager.encryptMessage(ProtocolSerializer.encodeGroupCtrlJson(ctrl), peerFp, aad)
+            } catch (e: Exception) {
+                return false
+            }
+            return relayManager.sendGroupCtrl(peerFp, ctrl.groupId, ciphertext, seq)
+        }
+        pendingCtrlQueue.getOrPut(peerFp) { mutableListOf() }.add(ctrl)
+        initiateKeyExchange(peerFp)
+        return false
+    }
+
+    /** 会话密钥建立后冲刷该对端的待发群控制信令 */
+    private fun flushPendingCtrls(peerFp: String) {
+        val queue = pendingCtrlQueue.remove(peerFp) ?: return
+        if (!cryptoManager.hasSessionKey(peerFp)) {
+            pendingCtrlQueue[peerFp] = queue
+            return
+        }
+        queue.forEach { sendGroupCtrlTo(peerFp, it) }
+    }
+
+    /** 解密失败时向群主请求补发密钥 (10s 节流) */
+    private fun maybeRequestGroupKey(group: com.engine.data.EngineGroup) {
+        val now = System.currentTimeMillis()
+        if (now - (lastKeyReqAt[group.id] ?: 0L) < KEY_REQ_THROTTLE_MS) return
+        lastKeyReqAt[group.id] = now
+        sendGroupCtrlTo(
+            group.ownerFp,
+            com.securesocial.core.protocol.GroupCtrlPayload(
+                action = com.securesocial.core.protocol.GroupCtrlActions.KEY_REQ,
+                groupId = group.id
+            )
+        )
+    }
+
+    /** 退群 (成员) / 解散 (群主) */
+    fun leaveGroup(groupId: String) {
+        val group = groupStore.getGroup(groupId) ?: return
+        if (group.isOwner) {
+            dissolveGroup(groupId)
+            return
+        }
+        sendGroupCtrlTo(
+            group.ownerFp,
+            com.securesocial.core.protocol.GroupCtrlPayload(
+                action = com.securesocial.core.protocol.GroupCtrlActions.LEAVE,
+                groupId = groupId
+            )
+        )
+        groupStore.remove(groupId)
+        messageStore.clearSession(com.engine.data.EngineGroup.conversationKey(groupId))
+    }
+
+    /** 解散群组 (仅群主): 通知全员后移除 */
+    fun dissolveGroup(groupId: String) {
+        val myFp = sessionManager.identityFingerprint ?: return
+        val group = groupStore.getGroup(groupId) ?: return
+        if (!group.isOwner) return
+        val ctrl = com.securesocial.core.protocol.GroupCtrlPayload(
+            action = com.securesocial.core.protocol.GroupCtrlActions.DISSOLVE,
+            groupId = groupId,
+            groupName = group.name,
+            ownerFp = myFp
+        )
+        group.members.map { it.fp }
+            .filter { it != myFp }
+            .forEach { sendGroupCtrlTo(it, ctrl) }
+        groupStore.remove(groupId)
+        messageStore.clearSession(com.engine.data.EngineGroup.conversationKey(groupId))
     }
 
     /**

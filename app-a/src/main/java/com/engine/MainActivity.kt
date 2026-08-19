@@ -33,6 +33,7 @@ import com.engine.data.BoundIdentityStore
 import com.engine.ui.components.EngineBackground
 import com.engine.ui.screen.ChatListScreen
 import com.engine.ui.screen.ChatScreen
+import com.engine.ui.screen.GroupsScreen
 import com.engine.ui.screen.LoginScreen
 import com.engine.ui.screen.MarksScreen
 import com.engine.ui.theme.EngineTheme
@@ -106,6 +107,11 @@ class MainActivity : ComponentActivity() {
                             // v3.16: 标记物列表 (设置抽屉 → 标记物)
                             composable("marks") {
                                 MarksScreen(navController = navController)
+                            }
+
+                            // v3.14: 群组管理 (设置抽屉 → 群组)
+                            composable("groups") {
+                                GroupsScreen(navController = navController)
                             }
                         }
                     }
