@@ -18,7 +18,10 @@ enum class MessageType {
     MSG,          // 加密消息透传
     PING,         // 心跳保活
     PONG,         // 心跳响应
-    ERROR         // 错误反馈
+    ERROR,        // 错误反馈
+    ROOM_REGISTER, // v3.14: 群主向中继登记邀请码 → 群主指纹映射
+    ROOM_LOOKUP,   // v3.14: 凭邀请码查询群主指纹 (中继目录服务)
+    ROOM_INFO      // v3.14: 中继对 ROOM_* 的统一应答
 }
 
 /**
@@ -146,6 +149,77 @@ object ErrorCodes {
     const val AUTH_FAILED = "AUTH_FAILED"          // v2: 挑战应答失败/超时/签名不合法
     const val FINGERPRINT_MISMATCH = "FINGERPRINT_MISMATCH"  // v2: 声称指纹与公钥不匹配
     const val SOURCE_MISMATCH = "SOURCE_MISMATCH"  // v2: envelope.source 与注册身份不符
+}
+
+/**
+ * ROOM_REGISTER 载荷 (v3.14) - 群主登记邀请码
+ *
+ * 中继仅维护 邀请码 → 群主指纹 的内存映射 (TTL 过期),
+ * 不保存任何群成员/群密钥信息 —— 无状态红线不破。
+ */
+@Serializable
+data class RoomRegisterPayload(
+    val code: String,          // 邀请码 (8 位大写字母+数字)
+    val fingerprint: String    // 群主指纹
+)
+
+/**
+ * ROOM_LOOKUP 载荷 (v3.14) - 凭邀请码找群主
+ */
+@Serializable
+data class RoomLookupPayload(
+    val code: String
+)
+
+/**
+ * ROOM_INFO 载荷 (v3.14) - 中继对 ROOM_REGISTER / ROOM_LOOKUP 的统一应答
+ *
+ * ok=true: 登记/查询成功; ownerFingerprint 非空 (LOOKUP)
+ * ok=false: error 携带 GroupErrorCodes
+ */
+@Serializable
+data class RoomInfoPayload(
+    val ok: Boolean,
+    val code: String = "",
+    val ownerFingerprint: String? = null,
+    val error: String? = null
+)
+
+/**
+ * 群组操作错误码 (v3.14)
+ */
+object GroupErrorCodes {
+    const val INVALID_CODE = "INVALID_CODE"       // 邀请码格式不合法
+    const val CODE_TAKEN = "CODE_TAKEN"           // 邀请码已被占用
+    const val NOT_FOUND = "NOT_FOUND"             // 邀请码不存在/已过期
+    const val RATE_LIMITED = "RATE_LIMITED"       // 查询限流 (防枚举)
+    const val UNAUTHORIZED = "UNAUTHORIZED"       // 非群主操作他人映射
+}
+
+/**
+ * 邀请码 (v3.14)
+ *
+ * - 8 位大写字母 + 数字, 剔除易混淆字符 (I O 0 1) —— 口播/截图友好
+ * - 熵: log2(32^8) ≈ 40 bit; 配合中继查询限流 (10 次/分钟/指纹),
+ *   枚举命中期望 > 10^10 年
+ */
+object InviteCode {
+    const val LENGTH = 8
+    const val ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+    /** 生成随机邀请码 */
+    fun generate(): String {
+        val random = java.security.SecureRandom()
+        return buildString {
+            repeat(LENGTH) {
+                append(ALPHABET[random.nextInt(ALPHABET.length)])
+            }
+        }
+    }
+
+    /** 格式校验: 8 位且全部在字母表内 */
+    fun isValid(code: String): Boolean =
+        code.length == LENGTH && code.all { it in ALPHABET }
 }
 
 /**

@@ -52,6 +52,7 @@ data class AuthenticatedNode(val fingerprint: String, val publicKey: PublicKey)
 fun Application.configureRouting() {
     val logger = LoggerFactory.getLogger("RelayServer")
     val registry = ConnectionRegistry()
+    val roomRegistry = RoomRegistry()   // v3.14: 邀请码目录 (内存 + TTL + 限流)
     val ecdsa = EcdsaOperations()
     val secureRandom = SecureRandom()
     val b64e = Base64.getEncoder()
@@ -65,7 +66,7 @@ fun Application.configureRouting() {
             // v2: 单 IP 并发连接配额
             if (!registry.tryAcquireIpSlot(remoteHost, ProtocolConstants.MAX_CONNECTIONS_PER_IP)) {
                 logger.warn("Connection quota exceeded for $remoteHost")
-                close(CloseReason(CloseReason.Codes.TryAgainLater, "Too many connections from this IP"))
+                close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "Too many connections from this IP"))
                 return@webSocket
             }
 
@@ -81,7 +82,7 @@ fun Application.configureRouting() {
                     send(Frame.Text(ProtocolSerializer.encodeError(
                         ErrorCodes.AUTH_FAILED, "Authentication failed or timed out"
                     )))
-                    close(CloseReason(CloseReason.Codes.ViolatedPolicy, "Authentication required"))
+                    close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Authentication required"))
                     return@webSocket
                 }
 
@@ -103,7 +104,7 @@ fun Application.configureRouting() {
                             ErrorCodes.PAYLOAD_TOO_LARGE,
                             "Payload exceeds ${ProtocolConstants.MAX_PAYLOAD_SIZE} bytes"
                         )))
-                        close(CloseReason(CloseReason.Codes.ViolatedPolicy, "Payload too large"))
+                        close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Payload too large"))
                         break
                     }
 
@@ -115,7 +116,7 @@ fun Application.configureRouting() {
                     }
                     if (++rateWindowCount > ProtocolConstants.MAX_MSG_PER_SECOND) {
                         logger.warn("Rate limit exceeded for ${node.fingerprint.take(8)}...")
-                        close(CloseReason(CloseReason.Codes.ViolatedPolicy, "Rate limit exceeded"))
+                        close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Rate limit exceeded"))
                         break
                     }
 
@@ -130,7 +131,7 @@ fun Application.configureRouting() {
                                     ErrorCodes.SOURCE_MISMATCH,
                                     "envelope.source does not match authenticated identity"
                                 )))
-                                close(CloseReason(CloseReason.Codes.ViolatedPolicy, "Identity mismatch"))
+                                close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Identity mismatch"))
                                 return@webSocket
                             }
                             val target = envelope.target ?: continue
@@ -149,7 +150,50 @@ fun Application.configureRouting() {
                             send(Frame.Text(ProtocolSerializer.encodePong(envelope.seq)))
                         }
 
+                        // v3.14: 群组目录服务 (登记/查询邀请码 → 群主指纹)
+                        MessageType.ROOM_REGISTER -> {
+                            if (envelope.source != node.fingerprint) {
+                                send(Frame.Text(ProtocolSerializer.encodeRoomInfo(
+                                    node.fingerprint,
+                                    RoomInfoPayload(false, error = GroupErrorCodes.UNAUTHORIZED)
+                                )))
+                                return@webSocket
+                            }
+                            val req = envelope.payload?.let { ProtocolSerializer.decodeRoomRegisterPayload(it) }
+                            if (req == null) {
+                                send(Frame.Text(ProtocolSerializer.encodeRoomInfo(
+                                    node.fingerprint,
+                                    RoomInfoPayload(false, error = ErrorCodes.INVALID_FORMAT)
+                                )))
+                            } else {
+                                val err = roomRegistry.register(req.code, req.fingerprint)
+                                send(Frame.Text(ProtocolSerializer.encodeRoomInfo(
+                                    node.fingerprint,
+                                    if (err == null) RoomInfoPayload(true, code = req.code, ownerFingerprint = req.fingerprint)
+                                    else RoomInfoPayload(false, code = req.code, error = err)
+                                )))
+                            }
+                        }
+
+                        MessageType.ROOM_LOOKUP -> {
+                            val req = envelope.payload?.let { ProtocolSerializer.decodeRoomLookupPayload(it) }
+                            if (req == null) {
+                                send(Frame.Text(ProtocolSerializer.encodeRoomInfo(
+                                    node.fingerprint,
+                                    RoomInfoPayload(false, error = ErrorCodes.INVALID_FORMAT)
+                                )))
+                            } else {
+                                val result = roomRegistry.lookup(req.code, node.fingerprint)
+                                send(Frame.Text(ProtocolSerializer.encodeRoomInfo(
+                                    node.fingerprint,
+                                    if (result.error == null) RoomInfoPayload(true, code = req.code, ownerFingerprint = result.ownerFingerprint)
+                                    else RoomInfoPayload(false, code = req.code, error = result.error)
+                                )))
+                            }
+                        }
+
                         MessageType.PONG -> { /* 心跳响应, 无需处理 */ }
+                        MessageType.ROOM_INFO,
                         MessageType.HELLO,
                         MessageType.CHALLENGE,
                         MessageType.HELLO_AUTH,

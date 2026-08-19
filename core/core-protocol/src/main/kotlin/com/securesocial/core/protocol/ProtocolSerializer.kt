@@ -152,4 +152,51 @@ object ProtocolSerializer {
         )
         return encode(envelope)
     }
+
+    // ==================== v3.14: 群组目录服务 ====================
+
+    /**
+     * ROOM_REGISTER - 群主登记邀请码 (客户端 → 中继)
+     */
+    fun encodeRoomRegister(fingerprint: String, code: String): String {
+        return encode(MessageEnvelope(
+            type = MessageType.ROOM_REGISTER,
+            source = fingerprint,
+            payload = json.encodeToString(RoomRegisterPayload(code, fingerprint))
+        ))
+    }
+
+    /**
+     * ROOM_LOOKUP - 凭邀请码查询群主指纹 (客户端 → 中继)
+     */
+    fun encodeRoomLookup(fingerprint: String, code: String): String {
+        return encode(MessageEnvelope(
+            type = MessageType.ROOM_LOOKUP,
+            source = fingerprint,
+            payload = json.encodeToString(RoomLookupPayload(code))
+        ))
+    }
+
+    /**
+     * ROOM_INFO - 中继统一应答 (中继 → 客户端)
+     */
+    fun encodeRoomInfo(target: String, info: RoomInfoPayload): String {
+        return encode(MessageEnvelope(
+            type = MessageType.ROOM_INFO,
+            target = target,
+            payload = json.encodeToString(info)
+        ))
+    }
+
+    fun decodeRoomRegisterPayload(payload: String): RoomRegisterPayload? = try {
+        json.decodeFromString(RoomRegisterPayload.serializer(), payload)
+    } catch (e: Exception) { null }
+
+    fun decodeRoomLookupPayload(payload: String): RoomLookupPayload? = try {
+        json.decodeFromString(RoomLookupPayload.serializer(), payload)
+    } catch (e: Exception) { null }
+
+    fun decodeRoomInfoPayload(payload: String): RoomInfoPayload? = try {
+        json.decodeFromString(RoomInfoPayload.serializer(), payload)
+    } catch (e: Exception) { null }
 }
