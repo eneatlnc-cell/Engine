@@ -82,6 +82,27 @@ class AppBIpcClient(private val context: Context) {
     }
 
     /**
+     * v3.13 通过 myvault://restore URI 唤起 Vault 身份恢复。
+     *
+     * Engine 清除数据/换机重装后本地绑定身份丢失时调用; Vault 在指纹门后
+     * 将该应用绑定的公钥经回调 result 送回 (私钥不出 Vault)。
+     */
+    fun launchRestore(sessionId: String): Boolean {
+        val uriString = IpcContract.buildRestoreUri(sessionId, context.packageName)
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uriString)).apply {
+            setPackage(IpcContract.VAULT_PACKAGE)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        return try {
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
      * 请求 Vault 用绑定的身份私钥签名 (v2 新增)
      *
      * @param sessionId      会话标识

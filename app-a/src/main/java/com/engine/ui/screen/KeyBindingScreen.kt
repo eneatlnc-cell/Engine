@@ -82,7 +82,9 @@ fun KeyBindingScreen(
             when (val state = uiState) {
                 is KeyBindingUiState.Idle -> {
                     IdleContent(
-                        onGenerate = { viewModel.generateKeyPair() }
+                        onGenerate = { viewModel.generateKeyPair() },
+                        // v3.13: 数据清除/换机后的第一推荐 —— 从 Vault 恢复同一 DID
+                        onRestore = { viewModel.restoreFromVault() }
                     )
                 }
 
@@ -107,6 +109,10 @@ fun KeyBindingScreen(
 
                 is KeyBindingUiState.WaitingCallback -> {
                     ProgressContent(text = "等待 Vault 回调中…")
+                }
+
+                is KeyBindingUiState.Restoring -> {
+                    ProgressContent(text = "正在从 Vault 恢复身份…")
                 }
 
                 is KeyBindingUiState.Success -> {
@@ -154,10 +160,17 @@ fun KeyBindingScreen(
 }
 
 /**
- * 空闲状态: 展示生成按钮
+ * 空闲状态: 生成按钮 + v3.13 恢复入口
+ *
+ * 恢复入口排序在生成之前: 清除数据/换机场景下, 用户的第一诉求是
+ * "找回原来的身份" (DID 不变, 联系人不动), 而不是创建新身份。
+ * Vault 无绑定时回 NO_BINDING, UI 引导回落到生成新密钥对。
  */
 @Composable
-private fun IdleContent(onGenerate: () -> Unit) {
+private fun IdleContent(
+    onGenerate: () -> Unit,
+    onRestore: () -> Unit
+) {
     Text(
         text = "密钥绑定",
         style = MaterialTheme.typography.headlineMedium,
@@ -166,17 +179,24 @@ private fun IdleContent(onGenerate: () -> Unit) {
     )
     Spacer(modifier = Modifier.size(16.dp))
     Text(
-        text = "点击下方按钮生成临时密钥对\n通过二维码与 Vault 完成绑定",
+        text = "曾绑定过 Vault? 可直接恢复原身份 (DID 不变)\n或生成新密钥对开始全新身份",
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         textAlign = TextAlign.Center
     )
     Spacer(modifier = Modifier.size(32.dp))
     Button(
+        onClick = onRestore,
+        contentPadding = PaddingValues(horizontal = 32.dp, vertical = 14.dp)
+    ) {
+        Text("从 Vault 恢复身份", fontWeight = FontWeight.SemiBold)
+    }
+    Spacer(modifier = Modifier.size(12.dp))
+    OutlinedButton(
         onClick = onGenerate,
         contentPadding = PaddingValues(horizontal = 32.dp, vertical = 14.dp)
     ) {
-        Text("生成密钥对", fontWeight = FontWeight.SemiBold)
+        Text("生成新密钥对", fontWeight = FontWeight.SemiBold)
     }
 }
 

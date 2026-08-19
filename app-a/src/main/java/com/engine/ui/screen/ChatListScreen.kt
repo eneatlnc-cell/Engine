@@ -136,8 +136,27 @@ fun ChatListScreen(
     // v3.11: 顶栏搜索态 (常驻搜索框移除, 点击 🔍 展开)
     var searchMode by rememberSaveable { mutableStateOf(false) }
     // 绑定指纹: 设置抽屉 DID/短码数据源
-    val boundFingerprint = remember {
-        BoundIdentityStore(app).getBoundFingerprint()
+    // v3.13 修复 "绑定后抽屉仍显示未绑定": v3.11 用 remember{} 一次性读取,
+    // 绑定完成回到本页时组合已缓存旧值 (null)。现改为:
+    //   · ON_RESUME 重读 (与 LoginGate 同款生命周期刷新)
+    //   · 每次抽屉打开前重读 (即时生效)
+    var boundFingerprint by remember {
+        mutableStateOf(BoundIdentityStore(app).getBoundFingerprint())
+    }
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                boundFingerprint = BoundIdentityStore(app).getBoundFingerprint()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    androidx.compose.runtime.LaunchedEffect(showSettings) {
+        if (showSettings) {
+            boundFingerprint = BoundIdentityStore(app).getBoundFingerprint()
+        }
     }
 
     // v3.8: 状态栏颜色与渐变顶端同色, 统一由 EngineSyncedTheme 管理
