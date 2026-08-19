@@ -34,7 +34,7 @@ class RoomRegistry {
     private val lookupWindow = ConcurrentHashMap<String, MutableList<Long>>()
 
     /**
-     * 登记邀请码
+     * 登记邀请码 (v3.14.2: compute 原子化, 消除 check-then-put TOCTOU 竞态)
      *
      * - 码被他人占用 → CODE_TAKEN
      * - 同一码已是自己的映射 → 刷新 TTL (幂等)
@@ -46,23 +46,31 @@ class RoomRegistry {
         val now = System.currentTimeMillis()
         expireStale(now)
 
-        val existing = rooms[code]
-        if (existing != null && existing.ownerFingerprint != ownerFingerprint) {
-            return com.securesocial.core.protocol.GroupErrorCodes.CODE_TAKEN
+        // compute 内 check-then-put 对同一 key 原子 (含过期视为空位)
+        var conflict = false
+        rooms.compute(code) { _, existing ->
+            when {
+                existing == null || existing.expiresAt < now ->
+                    Entry(ownerFingerprint, now + REGISTRY_TTL_MS)      // 空位/过期 → 占位
+                existing.ownerFingerprint == ownerFingerprint ->
+                    Entry(ownerFingerprint, now + REGISTRY_TTL_MS)      // 幂等刷新 TTL
+                else -> { conflict = true; existing }                   // 他人占用 → 保留
+            }
         }
-
-        rooms[code] = Entry(ownerFingerprint, now + REGISTRY_TTL_MS)
-        return null
+        return if (conflict) com.securesocial.core.protocol.GroupErrorCodes.CODE_TAKEN else null
     }
 
     /**
      * 查询邀请码 → 群主指纹
      *
+     * v3.14.2: 双维度限流 (指纹 + IP)。指纹可被批量伪造 (无成本生成密钥对),
+     * 单靠指纹限流挡不住枚举; IP 维度补位 (反代后为真实客户端 IP, 见 Application.kt)。
+     *
      * 返回:
      * - null 之外字符串 = 错误码 (INVALID_CODE / NOT_FOUND / RATE_LIMITED)
      * - null = 成功, ownerFingerprint 出参
      */
-    fun lookup(code: String, byFingerprint: String): LookupResult {
+    fun lookup(code: String, byFingerprint: String, clientIp: String? = null): LookupResult {
         if (!InviteCode.isValid(code)) {
             return LookupResult(error = com.securesocial.core.protocol.GroupErrorCodes.INVALID_CODE)
         }
@@ -70,7 +78,11 @@ class RoomRegistry {
         val now = System.currentTimeMillis()
         expireStale(now)
 
+        // 双窗口取更严: 指纹窗口先占位 (即使 IP 窗口拒绝也计费, 防交替试探)
         if (!tryAcquireLookupSlot(byFingerprint, now)) {
+            return LookupResult(error = com.securesocial.core.protocol.GroupErrorCodes.RATE_LIMITED)
+        }
+        if (clientIp != null && !tryAcquireLookupSlot("ip:$clientIp", now)) {
             return LookupResult(error = com.securesocial.core.protocol.GroupErrorCodes.RATE_LIMITED)
         }
 
@@ -109,10 +121,11 @@ class RoomRegistry {
     /** 当前登记数 (监控用) */
     fun size(): Int = rooms.size
 
-    /** 群主主动释放 (解散群时): 仅当映射仍属于该群主 */
+    /** 群主主动释放 (解散群时): 仅当映射仍属于该群主 (v3.14.2: compute 原子化防 TOCTOU) */
     fun release(code: String, ownerFingerprint: String) {
-        rooms[code]?.let { entry ->
-            if (entry.ownerFingerprint == ownerFingerprint) rooms.remove(code)
+        rooms.compute(code) { _, existing ->
+            if (existing != null && existing.ownerFingerprint == ownerFingerprint) null  // 属于自己 → 删除
+            else existing                                                                 // 不存在/已被他人重新登记 → 保留
         }
     }
 }

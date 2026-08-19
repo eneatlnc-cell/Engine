@@ -51,6 +51,9 @@ fun main() {
 /** 认证完成的节点信息 */
 data class AuthenticatedNode(val fingerprint: String, val publicKey: PublicKey)
 
+/** v3.14.2: 认证阶段最大帧数 (正常流程 ≤3 帧: HELLO + HELLO_AUTH + 冗余) */
+private const val AUTH_FRAME_BUDGET = 8
+
 fun Application.configureRouting() {
     val logger = LoggerFactory.getLogger("RelayServer")
     val registry = ConnectionRegistry()
@@ -62,12 +65,22 @@ fun Application.configureRouting() {
 
     routing {
         webSocket(ProtocolConstants.WEBSOCKET_PATH) {
-            val remoteHost = call.request.local.remoteHost
-            logger.info("New WebSocket connection from $remoteHost")
+            // v3.14.2: 真实客户端 IP 解析 (审计修复: local.remoteHost 在反代后恒为代理地址,
+            // 单 IP 配额形同虚设)
+            // - 直连: 使用 local.remoteHost
+            // - 反代部署 (直连对端为环回): 信任 X-Forwarded-For 首个地址
+            //   (仅环回信任 —— 外部客户端伪造的 XFF 头不会生效)
+            val directPeer = call.request.local.remoteHost
+            val clientIp = if (directPeer == "127.0.0.1" || directPeer == "::1" || directPeer == "0:0:0:0:0:0:0:1") {
+                call.request.headers["X-Forwarded-For"]
+                    ?.split(',')?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: directPeer
+            } else directPeer
+            logger.info("New WebSocket connection from $clientIp (direct=$directPeer)")
 
             // v2: 单 IP 并发连接配额
-            if (!registry.tryAcquireIpSlot(remoteHost, ProtocolConstants.MAX_CONNECTIONS_PER_IP)) {
-                logger.warn("Connection quota exceeded for $remoteHost")
+            if (!registry.tryAcquireIpSlot(clientIp, ProtocolConstants.MAX_CONNECTIONS_PER_IP)) {
+                logger.warn("Connection quota exceeded for $clientIp")
                 close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "Too many connections from this IP"))
                 return@webSocket
             }
@@ -76,7 +89,7 @@ fun Application.configureRouting() {
             var node: AuthenticatedNode? = null
 
             try {
-                // 步骤 1: 挑战-应答认证 (v2)
+                // 步骤 1: 挑战-应答认证 (v2; v3.14.2: 认证阶段帧预算, 防验签 CPU DoS)
                 node = withTimeoutOrNull(ProtocolConstants.AUTH_TIMEOUT_MS) {
                     waitForHelloAndAuth(ecdsa, secureRandom, b64e, b64d, logger)
                 }
@@ -166,7 +179,8 @@ fun Application.configureRouting() {
                                 return@webSocket
                             }
                             val req = envelope.payload?.let { ProtocolSerializer.decodeRoomRegisterPayload(it) }
-                            if (req == null) {
+                            // v3.14.2: 载荷指纹必须与认证身份一致 (防目录污染: 冒用他人指纹登记)
+                            if (req == null || req.fingerprint != node.fingerprint) {
                                 send(Frame.Text(ProtocolSerializer.encodeRoomInfo(
                                     node.fingerprint,
                                     RoomInfoPayload(false, error = ErrorCodes.INVALID_FORMAT)
@@ -182,6 +196,14 @@ fun Application.configureRouting() {
                         }
 
                         MessageType.ROOM_LOOKUP -> {
+                            // v3.14.2: 与 MSG 同级的身份校验
+                            if (envelope.source != node.fingerprint) {
+                                send(Frame.Text(ProtocolSerializer.encodeRoomInfo(
+                                    node.fingerprint,
+                                    RoomInfoPayload(false, error = GroupErrorCodes.UNAUTHORIZED)
+                                )))
+                                return@webSocket
+                            }
                             val req = envelope.payload?.let { ProtocolSerializer.decodeRoomLookupPayload(it) }
                             if (req == null) {
                                 send(Frame.Text(ProtocolSerializer.encodeRoomInfo(
@@ -189,7 +211,8 @@ fun Application.configureRouting() {
                                     RoomInfoPayload(false, error = ErrorCodes.INVALID_FORMAT)
                                 )))
                             } else {
-                                val result = roomRegistry.lookup(req.code, node.fingerprint)
+                                // v3.14.2: 限流叠加 IP 维度 (指纹可批量伪造, IP 不可; 双窗口取更严)
+                                val result = roomRegistry.lookup(req.code, node.fingerprint, clientIp)
                                 send(Frame.Text(ProtocolSerializer.encodeRoomInfo(
                                     node.fingerprint,
                                     if (result.error == null) RoomInfoPayload(true, code = req.code, ownerFingerprint = result.ownerFingerprint)
@@ -207,10 +230,10 @@ fun Application.configureRouting() {
                     }
                 }
             } finally {
-                registry.releaseIpSlot(remoteHost)
+                registry.releaseIpSlot(clientIp)
                 // 条件注销: 仅当映射仍指向本会话时移除 (防止误删顶号后的新会话)
                 node?.let { registry.unregisterIfOwner(it.fingerprint, this) }
-                logger.info("Connection closed from $remoteHost (${registry.onlineCount()} online)")
+                logger.info("Connection closed from $clientIp (${registry.onlineCount()} online)")
             }
         }
     }
@@ -235,8 +258,13 @@ private suspend fun DefaultWebSocketServerSession.waitForHelloAndAuth(
     var publicKey: PublicKey? = null
     var nonce: ByteArray? = null
 
+    // v3.14.2: 认证阶段帧预算 (纵深防御; 状态机本身对乱序/畸形一律断连,
+    // 此处兜底恶意畸形帧在超时窗口内的空转消耗)
+    var authFrames = 0
+
     for (frame in incoming) {
         if (frame !is Frame.Text) continue
+        if (++authFrames > AUTH_FRAME_BUDGET) return null
         val raw = frame.readText()
         if (raw.length > ProtocolConstants.MAX_PAYLOAD_SIZE) return null
         val envelope = ProtocolSerializer.decode(raw) ?: continue

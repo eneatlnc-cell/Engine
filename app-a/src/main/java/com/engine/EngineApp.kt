@@ -155,6 +155,12 @@ class EngineApp : Application() {
     // ---- v2: 消息防重放 (source → 已见最大 seq) ----
     private val lastSeqBySource = ConcurrentHashMap<String, Long>()
 
+    // ---- v3.14.2: 群控制信令防重放 (source → 已见最大 seq; 审计修复: 与 1:1 MSG 分离) ----
+    // 原: GROUP_CTRL 与 MSG 共用 lastSeqBySource —— 两类消息 seq 各自独立推进,
+    // 共享映射会把对方类型的合法新消息误判为重放 (可用性缺陷), 且语义混淆。
+    // AAD 不同已阻断跨类型密文移植, 分离后两条路径各自严格单调。
+    private val lastCtrlSeqBySource = ConcurrentHashMap<String, Long>()
+
     // ---- v2: 发送序列号 (时间戳初始化: 进程重启不回落) ----
     private val msgSeqCounter = AtomicLong(System.currentTimeMillis())
 
@@ -541,8 +547,17 @@ class EngineApp : Application() {
             if (contactStore.getContact(source) == null) {
                 contactStore.addContact(source, "用户 ${source.take(8)}")
             }
+        } catch (e: javax.crypto.AEADBadTagException) {
+            // v3.14.2: GCM tag 校验失败 ≠ 一般格式错误 —— 意味着密钥不同步
+            // (对端已重置 ECDH 临时密钥) 或密文被篡改。中继强制 source == 认证身份,
+            // 篡改者只能是对端自身, 故按密钥失步处理: 清除本端缓存,
+            // 待对方 SIGNAL 重握手 (或本端发送时触发重新协商)。不推进 seq,
+            // 密钥恢复后同 seq 报文可重新解密成功。
+            Log.w(TAG, "GCM tag mismatch from ${source.take(8)}... (key desync?), clearing session key")
+            sessionManager.clearSessionKey(source)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to decrypt message from $source")
+            // 格式/解码类错误: 不影响会话密钥状态
+            Log.e(TAG, "Failed to decrypt message from ${source.take(8)}...")
         }
     }
 
@@ -847,15 +862,15 @@ class EngineApp : Application() {
         val myFp = sessionManager.identityFingerprint ?: return
         if (target != null && target != myFp) return
 
-        // 与 MSG 共用同一单调计数器做防重放
-        if (seq <= (lastSeqBySource[source] ?: 0L)) return
+        // v3.14.2: 独立计数器 (原与 MSG 共享 → 类型间互相顶号, 合法信令被误拒)
+        if (seq <= (lastCtrlSeqBySource[source] ?: 0L)) return
         val aad = aesGcm.buildMessageAad(source, myFp, seq)
         val plaintext = try {
             cryptoManager.decryptMessage(payload, source, aad)
         } catch (e: Exception) {
             return
         }
-        lastSeqBySource[source] = seq
+        lastCtrlSeqBySource[source] = seq
 
         val ctrl = ProtocolSerializer.decodeGroupCtrlPayload(plaintext) ?: return
         val A = com.securesocial.core.protocol.GroupCtrlActions
