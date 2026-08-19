@@ -20,6 +20,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -241,9 +242,9 @@ fun ChatListScreen(
                             Icon(
                                 imageVector = Icons.Filled.LocalFireDepartment,
                                 contentDescription = "Spark",
-                                // v3.7 火焰橙品牌色 (tertiary)
+                                // v3.7 火焰橙品牌色 (tertiary); v3.12: 26→30dp 加大
                                 tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.size(26.dp)
+                                modifier = Modifier.size(30.dp)
                             )
                         }
                     }
@@ -278,8 +279,14 @@ fun ChatListScreen(
                 ) + fadeOut(tween(120))
             ) {
                 Box(contentAlignment = Alignment.BottomCenter) {
-                    // 展开项: 自下而上错峰弹出
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // v3.12: 展开列垫高到主 FAB 上方 (bottom = FAB 56dp + 16dp 间隙)。
+                    //   v3.11 病灶: Column 与主 FAB 同底边对齐, 展开后 Column
+                    //   底部 56dp 直接压在 FAB 圆面上 —— 视频确认的 "重叠展示"。
+                    //   现在药丸严格从 FAB 顶缘向上生长, 右对齐贴边。
+                    Column(
+                        horizontalAlignment = Alignment.End,
+                        modifier = Modifier.padding(bottom = 72.dp)
+                    ) {
                         FabAction(
                             visible = fabExpanded,
                             label = "新建群组",
@@ -597,9 +604,16 @@ private fun FabAction(
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .padding(bottom = 14.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))
+                .padding(bottom = 12.dp)
+                .clip(RoundedCornerShape(18.dp))
+                // v3.12: 不透明 surfaceContainerHigh —— v3.11 的半透明 surface 底
+                // 在夜间让渐变背景透进来, 文字对比度塌掉; 该角色已进主题统一时钟
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                // v3.10 无影语言: 发丝描边提边界
+                .border(
+                    BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    RoundedCornerShape(18.dp)
+                )
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -622,6 +636,9 @@ private fun FabAction(
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelLarge,
+                // v3.12: 显式 onSurface —— 不再依赖继承, 夜间同步变色
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.Medium,
             )
         }
     }
