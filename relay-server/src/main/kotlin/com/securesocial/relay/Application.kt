@@ -3,11 +3,13 @@ package com.securesocial.relay
 import com.securesocial.core.crypto.EcdsaOperations
 import com.securesocial.core.crypto.KeyFingerprint
 import com.securesocial.core.protocol.ErrorCodes
+import com.securesocial.core.protocol.GroupErrorCodes
 import com.securesocial.core.protocol.MessageType
 import com.securesocial.core.protocol.MessageEnvelope
 import com.securesocial.core.protocol.ProtocolConstants
 import com.securesocial.core.protocol.ProtocolSerializer
 import com.securesocial.core.protocol.RelayAuth
+import com.securesocial.core.protocol.RoomInfoPayload
 import io.ktor.server.application.*
 import io.ktor.server.engine.*
 import io.ktor.server.netty.*

@@ -3,7 +3,9 @@ package com.engine.ui.components
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
@@ -45,11 +48,16 @@ import java.util.Locale
  * - 己方: primary 底 onPrimary 字, 右对齐
  * - 对方: 浅灰底黑字, 左对齐
  * - 圆角矩形, animateContentSize 弹簧动画
+ * - v3.16: 长按触发 [onLongPress] (标记菜单); 已标记消息
+ *   时间行前显示书签角标 (primary 色, 与发送状态图标同排)
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MessageBubble(
     message: ChatMessage,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isMarked: Boolean = false,
+    onLongPress: (() -> Unit)? = null
 ) {
     val isMine = message.isMine
 
@@ -93,6 +101,10 @@ fun MessageBubble(
                     if (isMine) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.surfaceVariant
                 )
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = { onLongPress?.invoke() }
+                )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
                 .animateContentSize(
                     animationSpec = spring(
@@ -113,12 +125,23 @@ fun MessageBubble(
 
             Spacer(modifier = Modifier.size(4.dp))
 
-            // 时间戳 + 状态图标
+            // 时间戳 + 状态图标 (v3.16: + 书签角标)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.End,
                 modifier = Modifier.fillMaxWidth()
             ) {
+                // v3.16: 已标记书签角标 (时间行首位)
+                if (isMarked) {
+                    Icon(
+                        imageVector = Icons.Default.Bookmark,
+                        contentDescription = "已标记",
+                        modifier = Modifier.size(13.dp),
+                        tint = if (isMine) MaterialTheme.colorScheme.onPrimary
+                        else MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.size(3.dp))
+                }
                 Text(
                     text = formatMessageTime(message.timestamp),
                     color = if (isMine) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)

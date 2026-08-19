@@ -312,8 +312,8 @@ private fun rememberEngineDrawerState(
         initialValue = androidx.compose.material3.DrawerValue.Closed,
     )
     androidx.compose.runtime.LaunchedEffect(isOpen) {
-        if (isOpen) state.animateTo(androidx.compose.material3.DrawerValue.Open)
-        else state.animateTo(androidx.compose.material3.DrawerValue.Closed)
+        // m3 1.2: DrawerState.animateTo 为内部 API, 用公开扩展 open()/close()
+        if (isOpen) state.open() else state.close()
     }
     androidx.compose.runtime.LaunchedEffect(state.currentValue, state.isAnimationRunning) {
         // 手势滑到关闭 → 通知宿主同步状态

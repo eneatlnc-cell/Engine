@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -50,6 +51,7 @@ import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -170,7 +172,8 @@ fun ChatListScreen(
         fingerprint = boundFingerprint,
         onOpenDid = { /* TODO(v3.12): DID 详情页 */ },
         onOpenGroups = { /* TODO(v3.12): 群组管理页 */ },
-        onOpenMarks = { /* TODO(v3.12): 标记物列表 */ },
+        // v3.16: 标记物列表页已落地
+        onOpenMarks = { navController.navigate("marks") },
     ) {
     Scaffold(
         // v3.8: 透明底 —— 让 EngineBackground 的全局渐变一路铺到屏幕顶
@@ -337,10 +340,20 @@ fun ChatListScreen(
                     )
                     FloatingActionButton(
                         onClick = { fabExpanded = !fabExpanded },
-                        shadowElevation = 0.dp,
-                        border = BorderStroke(
-                            1.dp,
-                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                        // v3.10 无影语言: 四态 elevation 全零
+                        elevation = FloatingActionButtonDefaults.elevation(
+                            defaultElevation = 0.dp,
+                            pressedElevation = 0.dp,
+                            focusedElevation = 0.dp,
+                            hoveredElevation = 0.dp,
+                        ),
+                        // 发丝描边 (m3 FAB 无 border 参数, 用 Modifier 补)
+                        modifier = Modifier.border(
+                            border = BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                            ),
+                            shape = CircleShape
                         )
                     ) {
                         Icon(
@@ -642,7 +655,12 @@ private fun FabAction(
         ) {
             SmallFloatingActionButton(
                 onClick = onClick,
-                shadowElevation = 0.dp,
+                elevation = FloatingActionButtonDefaults.elevation(
+                    defaultElevation = 0.dp,
+                    pressedElevation = 0.dp,
+                    focusedElevation = 0.dp,
+                    hoveredElevation = 0.dp,
+                ),
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
             ) {
                 Icon(

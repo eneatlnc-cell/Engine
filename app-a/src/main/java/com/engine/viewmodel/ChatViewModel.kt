@@ -21,7 +21,9 @@ import java.util.UUID
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
-    val inputText: String = ""
+    val inputText: String = "",
+    /** v3.16: 已标记消息 ID 集 (驱动气泡书签角标) */
+    val markedMessageIds: Set<String> = emptySet()
 )
 
 /**
@@ -31,6 +33,7 @@ data class ChatUiState(
  * - 管理与指定对端的会话消息
  * - 发送消息: 加密 → 中继发送 → 写入内存
  * - 重发失败消息
+ * - v3.16: 标记/取消标记消息 (快照落盘)
  * - 退出页面时释放该会话消息引用
  */
 class ChatViewModel(
@@ -42,15 +45,22 @@ class ChatViewModel(
     private val relayManager = app.relayManager
     private val cryptoManager = app.cryptoManager
     private val contactStore = app.contactStore
+    private val markerStore = app.markerStore
 
     private val _inputText = MutableStateFlow("")
 
     val uiState: StateFlow<ChatUiState> = combine(
         messageStore.getMessages(peerFingerprint),
         relayManager.connectionState,
-        _inputText
-    ) { messages, connState, inputText ->
-        ChatUiState(messages = messages, connectionState = connState, inputText = inputText)
+        _inputText,
+        markerStore.markers
+    ) { messages, connState, inputText, marks ->
+        ChatUiState(
+            messages = messages,
+            connectionState = connState,
+            inputText = inputText,
+            markedMessageIds = marks.map { it.messageId }.toSet()
+        )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -106,6 +116,18 @@ class ChatViewModel(
         viewModelScope.launch {
             doSend(msg)
         }
+    }
+
+    /**
+     * v3.16: 标记/取消标记消息
+     *
+     * 标记 = 将消息快照 (文本+对端+时间) 写入应用私有文件;
+     * 取消 = 从标记物文件中移除。昵称以标记时刻的联系人表为准。
+     */
+    fun toggleMark(message: ChatMessage) {
+        val peerName = contactStore.getContact(peerFingerprint)?.nickname
+            ?: "用户 ${peerFingerprint.take(8)}"
+        markerStore.toggle(message, peerName)
     }
 
     /**

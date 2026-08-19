@@ -136,10 +136,12 @@ fun KeyBindingScreen(
         AlertDialog(
             onDismissRequest = { showRebindConfirm = false },
             title = { Text("重新绑定密钥?") },
-            text = Text(
-                "重新绑定将生成全新密钥对, Vault 中的旧私钥会被覆盖, " +
-                    "旧身份将永久失效, 所有联系人将无法再识别当前设备。"
-            ),
+            text = {
+                Text(
+                    "重新绑定将生成全新密钥对, Vault 中的旧私钥会被覆盖, " +
+                        "旧身份将永久失效, 所有联系人将无法再识别当前设备。"
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = {

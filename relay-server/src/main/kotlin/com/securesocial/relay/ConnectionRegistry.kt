@@ -1,6 +1,11 @@
 package com.securesocial.relay
 
+// Ktor 2.x: DefaultWebSocketServerSession 在 server-websocket 包
+import io.ktor.server.websocket.*
 import io.ktor.websocket.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -18,6 +23,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * 线程安全: 使用 ConcurrentHashMap 保证并发安全。
  */
 class ConnectionRegistry {
+
+    /** 旧连接关闭协程域 (close 为挂起函数, 异步执行不阻塞注册路径) */
+    private val closeScope = CoroutineScope(SupervisorJob())
 
     private val connections = ConcurrentHashMap<String, DefaultWebSocketServerSession>()
 
@@ -43,7 +51,7 @@ class ConnectionRegistry {
      */
     fun releaseIpSlot(ip: String) {
         ipCounts[ip]?.let { counter ->
-            val current: Int
+            var current: Int
             do {
                 current = counter.get()
             } while (current > 0 && !counter.compareAndSet(current, current - 1))
@@ -61,10 +69,12 @@ class ConnectionRegistry {
      * @param session WebSocket 会话
      */
     fun register(fingerprint: String, session: DefaultWebSocketServerSession) {
-        // 如果该指纹已有连接, 先关闭旧连接
+        // 如果该指纹已有连接, 异步关闭旧连接 (close 为挂起函数)
         connections[fingerprint]?.let { oldSession ->
-            runCatching {
-                oldSession.close(CloseReason(CloseReason.Codes.Normal, "Replaced by new authenticated connection"))
+            closeScope.launch {
+                runCatching {
+                    oldSession.close(CloseReason(CloseReason.Codes.NORMAL, "Replaced by new authenticated connection"))
+                }
             }
         }
         connections[fingerprint] = session
@@ -89,16 +99,18 @@ class ConnectionRegistry {
 
     /**
      * 查找目标节点的 WebSocket 会话
+     *
+     * Ktor 2.x 无 isOpen 属性, 以发送通道状态判活
      */
     fun findSession(fingerprint: String): DefaultWebSocketServerSession? {
-        return connections[fingerprint]?.takeIf { it.isOpen }
+        return connections[fingerprint]?.takeIf { !it.outgoing.isClosedForSend }
     }
 
     /**
      * 检查节点是否在线
      */
     fun isOnline(fingerprint: String): Boolean {
-        return connections[fingerprint]?.isOpen == true
+        return connections[fingerprint]?.let { !it.outgoing.isClosedForSend } == true
     }
 
     /**

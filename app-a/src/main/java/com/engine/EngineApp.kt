@@ -64,6 +64,9 @@ class EngineApp : Application() {
     val ipcClient = AppBIpcClient(this)
     val boundIdentityStore by lazy { BoundIdentityStore(this) }
 
+    // v3.16: 标记物仓库 — 用户显式收藏的消息快照 (应用唯一持久化数据)
+    val markerStore by lazy { com.engine.data.MarkerStore(this) }
+
     private val aesGcm = AesGcmCipher()
     private val b64e = Base64.getEncoder()
     private val b64d = Base64.getDecoder()

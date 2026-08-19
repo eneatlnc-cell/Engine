@@ -34,6 +34,7 @@ import com.engine.ui.components.EngineBackground
 import com.engine.ui.screen.ChatListScreen
 import com.engine.ui.screen.ChatScreen
 import com.engine.ui.screen.LoginScreen
+import com.engine.ui.screen.MarksScreen
 import com.engine.ui.theme.EngineTheme
 import com.engine.viewmodel.LoginUiState
 import com.engine.viewmodel.LoginViewModel
@@ -62,6 +63,8 @@ class MainActivity : ComponentActivity() {
 
         // 处理启动 Intent (myvault://callback)
         handleCallbackIntent(intent)
+
+        val app = application as EngineApp
 
         setContent {
             EngineTheme(darkTheme = app.isDarkTheme) {
@@ -99,6 +102,11 @@ class MainActivity : ComponentActivity() {
                                     peerFingerprint = peerFingerprint
                                 )
                             }
+
+                            // v3.16: 标记物列表 (设置抽屉 → 标记物)
+                            composable("marks") {
+                                MarksScreen(navController = navController)
+                            }
                         }
                     }
                 }
@@ -116,7 +124,8 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun LoginGate(content: @Composable () -> Unit) {
         val app = application as EngineApp
-        val isLoggedIn by app.isLoggedIn
+        // 直接读取 (mutableStateOf 属性在组合内读取即具响应性, 无需 by 委托)
+        val isLoggedIn = app.isLoggedIn
         val lifecycleOwner = LocalLifecycleOwner.current
 
         var boundFingerprint by remember {

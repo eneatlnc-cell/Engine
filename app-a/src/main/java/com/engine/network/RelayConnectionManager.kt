@@ -322,6 +322,12 @@ class RelayConnectionManager {
 
             // 客户端不应收到对端 HELLO_AUTH; 忽略
             MessageType.HELLO_AUTH -> Unit
+
+            // v3.14: 群组目录应答 (ROOM_INFO) 与登记请求 (ROOM_*)
+            // 由群组功能的专用流程处理, 消息主循环暂忽略
+            MessageType.ROOM_REGISTER,
+            MessageType.ROOM_LOOKUP,
+            MessageType.ROOM_INFO -> Unit
         }
     }
 

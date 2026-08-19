@@ -17,33 +17,43 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.engine.EngineApp
+import com.engine.data.ChatMessage
 import com.engine.data.MessageStatus
 import com.engine.network.ConnectionState
 import com.engine.ui.components.ConnectionStatusBar
@@ -75,6 +85,9 @@ fun ChatScreen(
     val peerName = contact?.nickname ?: "用户 ${peerFingerprint.take(8)}"
 
     val listState = rememberLazyListState()
+
+    // v3.16: 长按弹出的标记菜单目标消息 (null = 菜单收起)
+    var markMenuMessage by remember { mutableStateOf<ChatMessage?>(null) }
 
     // 新消息到达时自动滚动到底部
     LaunchedEffect(uiState.messages.size) {
@@ -154,7 +167,11 @@ fun ChatScreen(
                         }
                     }
 
-                    MessageBubble(message = message)
+                    MessageBubble(
+                        message = message,
+                        isMarked = message.id in uiState.markedMessageIds,
+                        onLongPress = { markMenuMessage = message }
+                    )
                 }
             }
 
@@ -165,6 +182,66 @@ fun ChatScreen(
                 onSend = { viewModel.sendMessage(it) },
                 enabled = uiState.connectionState == ConnectionState.CONNECTED
             )
+        }
+    }
+
+    // v3.16: 标记菜单 (长按消息弹出)
+    markMenuMessage?.let { target ->
+        val marked = target.id in uiState.markedMessageIds
+        ModalBottomSheet(
+            onDismissRequest = { markMenuMessage = null },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 32.dp)
+            ) {
+                // 消息预览 (最多两行, 交代操作对象)
+                Text(
+                    text = target.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.size(20.dp))
+
+                // 标记/取消标记 (整行可点)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .clickable {
+                            viewModel.toggleMark(target)
+                            markMenuMessage = null
+                        }
+                        .padding(horizontal = 20.dp, vertical = 16.dp)
+                ) {
+                    Icon(
+                        imageVector = if (marked) Icons.Default.BookmarkBorder
+                        else Icons.Default.Bookmark,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.size(16.dp))
+                    Text(
+                        text = if (marked) "取消标记" else "标记",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text(
+                        text = if (marked) "从标记物移除" else "保存消息快照",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 }
