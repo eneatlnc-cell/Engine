@@ -15,6 +15,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -173,22 +174,37 @@ fun ChatListScreen(
         },
         floatingActionButton = {
             // v3.6: FAB 弹簧出入场 (旧版切 Tab 时瞬现瞬灭)
+            // v3.10: 修复白天模式切页签时 FAB "重影" ——
+            //   病灶 ①: M3 FAB 默认 shadowElevation=6dp。出场动画是
+            //     scaleOut+fadeOut —— 带 shadow 的 layer 做 alpha 渐隐时,
+            //     半透明灰影在亮背景上渲染成光环 (视频帧里 FAB 左下侧
+            //     2-4px 淡色 halo 即是); 深色模式影不可见, 所以 "夜间丝滑"。
+            //   病灶 ②: 入场 MediumBouncy 弹簧过冲 >1.0, 过冲帧的投影
+            //     半径大于落定圆 → 肉眼看到 "两个同心圆"。
+            //   修复: 投影归零改 1dp 发丝描边 (与 v3.8 菜单同一处理),
+            //     入场降为 LowBouncy (保留弹性、去过冲拖影)。
             AnimatedVisibility(
                 visible = selectedTab == 0,
                 enter = scaleIn(
-                    initialScale = 0.6f,
+                    initialScale = 0.5f,
                     animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        dampingRatio = Spring.DampingRatioLowBouncy,
                         stiffness = Spring.StiffnessMedium
                     )
-                ) + fadeIn(),
+                ) + fadeIn(tween(120)),
                 exit = scaleOut(
-                    targetScale = 0.6f,
-                    animationSpec = tween(140)
-                ) + fadeOut(tween(140))
+                    targetScale = 0.5f,
+                    animationSpec = tween(120)
+                ) + fadeOut(tween(120))
             ) {
                 FloatingActionButton(
-                    onClick = { selectedTab = 1 }
+                    onClick = { selectedTab = 1 },
+                    // v3.10: 无影 FAB —— 发丝描边表达层次, 渐隐不再有光环
+                    shadowElevation = 0.dp,
+                    border = BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                    )
                 ) {
                     Icon(Icons.Filled.PersonAdd, contentDescription = "添加联系人")
                 }
