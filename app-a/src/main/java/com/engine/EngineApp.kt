@@ -9,7 +9,7 @@ import androidx.compose.runtime.setValue
 import com.engine.crypto.E2ECryptoManager
 import com.engine.crypto.TemporaryKeyGenerator
 import com.engine.data.BoundIdentityStore
-import com.engine.data.InMemoryContactStore
+import com.engine.data.PersistentContactStore
 import com.engine.data.InMemoryMessageStore
 import com.engine.data.MessageStatus
 import com.engine.data.ChatMessage
@@ -58,7 +58,10 @@ class EngineApp : Application() {
 
     val sessionManager = SessionManager()
     val messageStore = InMemoryMessageStore()
-    val contactStore = InMemoryContactStore()
+
+    // v3.14.1: 联系人持久化 (指纹+昵称落盘; 消息预览仅内存)
+    // lazy: Application 构造期 Context 未附体, 首次访问在运行期
+    val contactStore by lazy { PersistentContactStore(this) }
     val relayManager = RelayConnectionManager()
     val cryptoManager = E2ECryptoManager(sessionManager)
     val keyGenerator = TemporaryKeyGenerator()
@@ -90,6 +93,15 @@ class EngineApp : Application() {
 
     /** v3.14: 邀请码登记冲突重试计数 (groupId → 已重试次数) */
     private val inviteRetryCount = ConcurrentHashMap<String, Int>()
+
+    // ---- v3.14.1: 群在场表与主权顺移 ----
+
+    /** 群在场表 (groupId → (成员fp → 最近心跳时间)) */
+    private val presenceSeen = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
+
+    /** 本轮中继连接建立时间 (0 = 未连接); 判定他人失联前须连续在线满一个超时窗口 */
+    @Volatile
+    private var relayConnectedSince = 0L
 
     private val aesGcm = AesGcmCipher()
     private val b64e = Base64.getEncoder()
@@ -234,6 +246,12 @@ class EngineApp : Application() {
         /** v3.14: 群密钥补发请求节流 (防解密失败风暴) */
         private const val KEY_REQ_THROTTLE_MS = 10_000L
 
+        /** v3.14.1: 群心跳间隔 */
+        private const val PRESENCE_INTERVAL_MS = 30_000L
+
+        /** v3.14.1: 成员失联判定窗口 (3 个心跳周期无信号 = 失联) */
+        private const val MEMBER_TIMEOUT_MS = 90_000L
+
         /**
          * 中继服务器地址 (v2: 经 BuildConfig 配置, 支持生产 VPS wss:// 地址)
          * 构建时以 -PrelayUrl=... 覆盖, 详见 README 部署章节
@@ -258,6 +276,7 @@ class EngineApp : Application() {
         }
 
         setupRelayCallback()
+        startGroupPresenceLoop()
     }
 
     /**
@@ -372,10 +391,12 @@ class EngineApp : Application() {
             }
 
             override fun onConnected() {
+                relayConnectedSince = System.currentTimeMillis()
                 Log.i(TAG, "Relay connected (authenticated)")
             }
 
             override fun onDisconnected() {
+                relayConnectedSince = 0L
                 Log.i(TAG, "Relay disconnected")
             }
         })
@@ -663,6 +684,8 @@ class EngineApp : Application() {
             createdAt = System.currentTimeMillis()
         )
         groupStore.upsert(group)
+        // v3.14.1: 建群播种在场表 (全员宽限一个失联窗口)
+        seedPresence(gid, group.members.map { it.fp })
 
         // 中继目录登记 (异步回执; CODE_TAKEN 自动换码重试)
         group.inviteCode?.let { relayManager.sendRoomRegister(it) }
@@ -838,18 +861,26 @@ class EngineApp : Application() {
         val A = com.securesocial.core.protocol.GroupCtrlActions
 
         when (ctrl.action) {
-            // 密钥分发: 首次到达 = 入群成功
-            A.KEY -> applyGroupKey(ctrl)
+            // 密钥分发: 首次到达 = 入群成功; 再次 = 轮换/补发/主权接管
+            A.KEY -> applyGroupKey(source, ctrl)
 
             // 花名册更新 (无密钥变化)
             A.ROSTER -> {
                 val gid = ctrl.groupId ?: return
                 val group = groupStore.getGroup(gid) ?: return
-                groupStore.updateRoster(
-                    gid,
-                    ctrl.groupName ?: group.name,
-                    ctrl.members.map { it.toMember() }
-                )
+                val members = ctrl.members.map { it.toMember() }
+                groupStore.updateRoster(gid, ctrl.groupName ?: group.name, members)
+                // v3.14.1: 新花名册成员播入在场表 (宽限窗口)
+                seedPresence(gid, members.map { it.fp })
+            }
+
+            // v3.14.1: 在线心跳 → 刷新在场表
+            A.PRESENCE -> {
+                val gid = ctrl.groupId ?: return
+                if (groupStore.getGroup(gid) != null) {
+                    presenceSeen.getOrPut(gid) { ConcurrentHashMap() }[source] =
+                        System.currentTimeMillis()
+                }
             }
 
             // 群主侧: 入群申请 (凭邀请码匹配群, v3.14 自动批准)
@@ -868,6 +899,7 @@ class EngineApp : Application() {
 
                 // 新成员: 全量 KEY; 既有成员: ROSTER
                 val fresh = groupStore.getGroup(group.id) ?: return
+                seedPresence(group.id, listOf(source) + fresh.members.map { it.fp })
                 sendGroupCtrlTo(source, keyCtrlFor(fresh))
                 val rosterCtrl = ctrlFor(fresh, A.ROSTER)
                 fresh.members.map { it.fp }
@@ -927,36 +959,76 @@ class EngineApp : Application() {
         }
     }
 
-    /** KEY 分发落地: 首次 = 入群成功建立群; 再次 = 轮换/补发 */
-    private fun applyGroupKey(ctrl: com.securesocial.core.protocol.GroupCtrlPayload) {
+    /**
+     * KEY 分发落地: 首次 = 入群; 再次 = 轮换/补发/主权接管 (v3.14.1)
+     *
+     * 守卫:
+     * 1. 版本单调: 旧版本拒绝; 同版本仅接受同群主 (幂等重放), 异主拒绝
+     * 2. 所有权变更仅当: 我非群主 + 声明者自称群主 + 其为在册成员 +
+     *    旧群主在我的在场视图已失联 —— 防在册恶意成员在群主健在时抢权
+     */
+    private fun applyGroupKey(source: String, ctrl: com.securesocial.core.protocol.GroupCtrlPayload) {
         val gid = ctrl.groupId ?: return
         val myFp = sessionManager.identityFingerprint ?: return
-        val members = ctrl.members.map { it.toMember() }
-        val key = ctrl.keyB64?.let { groupCrypto.base64ToKey(it) }
-        val myRole = if (ctrl.ownerFp == myFp)
-            com.securesocial.core.protocol.GroupRoles.OWNER
-        else com.securesocial.core.protocol.GroupRoles.MEMBER
-
         val existing = groupStore.getGroup(gid)
+
+        if (existing != null) {
+            if (ctrl.keyVersion < existing.keyVersion) return
+            if (ctrl.keyVersion == existing.keyVersion && ctrl.ownerFp != existing.ownerFp) return
+            if (ctrl.ownerFp != null && ctrl.ownerFp != existing.ownerFp) {
+                if (existing.isOwner) return
+                if (source != ctrl.ownerFp) return
+                if (existing.members.none { it.fp == source }) return
+                val now = System.currentTimeMillis()
+                val ownerAlive = (presenceSeen[gid]?.get(existing.ownerFp) ?: 0L) > now - MEMBER_TIMEOUT_MS
+                if (ownerAlive) return
+            }
+        }
+
+        val members = ctrl.members.map { it.toMember() }
+        if (members.isEmpty()) return
+        val key = ctrl.keyB64?.let { groupCrypto.base64ToKey(it) }
+        val R = com.securesocial.core.protocol.GroupRoles
+        val myRole = if (ctrl.ownerFp == myFp) R.OWNER else R.MEMBER
+
         if (existing == null) {
+            if (ctrl.ownerFp == null || key == null) return
             groupStore.upsert(
                 com.engine.data.EngineGroup(
                     id = gid,
                     name = ctrl.groupName ?: "群组",
-                    ownerFp = ctrl.ownerFp ?: return,
+                    ownerFp = ctrl.ownerFp!!,
                     myRole = myRole,
                     members = members,
                     groupKey = key,
                     keyVersion = ctrl.keyVersion,
-                    inviteCode = null,
+                    inviteCode = ctrl.code,
                     inviteConfirmed = false,
                     createdAt = System.currentTimeMillis()
                 )
             )
             Log.i(TAG, "Joined group ${gid.take(8)}... (${members.size} members)")
         } else {
-            groupStore.updateRoster(gid, ctrl.groupName ?: existing.name, members, ctrl.keyVersion, key)
+            val codeChanged = ctrl.code != null && ctrl.code != existing.inviteCode
+            val ownershipChanged = ctrl.ownerFp != null && ctrl.ownerFp != existing.ownerFp
+            groupStore.upsert(
+                existing.copy(
+                    name = ctrl.groupName ?: existing.name,
+                    ownerFp = ctrl.ownerFp ?: existing.ownerFp,
+                    myRole = myRole,
+                    members = members,
+                    groupKey = key ?: existing.groupKey,
+                    keyVersion = maxOf(ctrl.keyVersion, existing.keyVersion),
+                    inviteCode = ctrl.code ?: existing.inviteCode,
+                    inviteConfirmed = if (codeChanged) false else existing.inviteConfirmed
+                )
+            )
+            if (ownershipChanged) {
+                Log.i(TAG, "Group ${gid.take(8)}... ownership migrated to ${ctrl.ownerFp?.take(8)}...")
+            }
         }
+        // v3.14.1: 花名册全体播入在场表 (宽限窗口, 防刚入群即被判失联)
+        seedPresence(gid, members.map { it.fp })
     }
 
     /** 群主: 轮换群密钥并对余员重发 KEY */
@@ -983,6 +1055,8 @@ class EngineApp : Application() {
             groupId = group.id,
             groupName = group.name,
             ownerFp = group.ownerFp,
+            // v3.14.1: 邀请码随 KEY 分发 —— 主权顺移后新群主可据此重新登记
+            code = group.inviteCode,
             members = group.members.map {
                 com.securesocial.core.protocol.GroupMemberData(it.fp, it.nickname, it.role)
             },
@@ -1036,6 +1110,143 @@ class EngineApp : Application() {
                 groupId = group.id
             )
         )
+    }
+
+    // ==================== v3.14.1: 在场心跳与主权顺移 ====================
+
+    /**
+     * 启动群在场心跳循环 (Application onCreate 起, 常驻)
+     *
+     * 每 30s 一拍:
+     * 1. 向所有群的其他成员广播 PRESENCE (经 1:1 会话密钥, 无会话自动 ECDH)
+     * 2. 判定 (须本轮中继连接连续在线 ≥ 失联窗口, 防重连后全员"失联"误判):
+     *    - 我是群主: 清退失联成员 (视同退群 → 轮换密钥)
+     *    - 我非群主: 群主失联且我是顺位首位在线成员 → 接管群主权
+     *
+     * 群生命周期语义: 只要还有一人在线群即存活 (主权顺移接力);
+     * 最后一人关闭应用 → 内存态消散, 群彻底消失, 再沟通需凭新邀请码重建。
+     */
+    private fun startGroupPresenceLoop() {
+        appScope.launch {
+            while (true) {
+                delay(PRESENCE_INTERVAL_MS)
+                try {
+                    groupPresenceTick()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Presence tick failed: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun groupPresenceTick() {
+        if (relayManager.connectionState.value != ConnectionState.CONNECTED) return
+        val myFp = sessionManager.identityFingerprint ?: return
+        val now = System.currentTimeMillis()
+        val A = com.securesocial.core.protocol.GroupCtrlActions
+
+        for (group in groupStore.groups.value.toList()) {
+            if (group.groupKey == null) continue
+            val others = group.members.map { it.fp }.filter { it != myFp }
+
+            // 1. 心跳广播
+            val beat = com.securesocial.core.protocol.GroupCtrlPayload(
+                action = A.PRESENCE, groupId = group.id
+            )
+            others.forEach { sendGroupCtrlTo(it, beat) }
+
+            // 2. 失联判定 (须连续在线满一个窗口)
+            if (now - relayConnectedSince < MEMBER_TIMEOUT_MS) continue
+
+            if (group.isOwner) {
+                ownerPruneExpiredMembers(group, now)
+            } else {
+                val seen = presenceSeen[group.id]
+                val ownerAlive = (seen?.get(group.ownerFp) ?: 0L) > now - MEMBER_TIMEOUT_MS
+                if (!ownerAlive) {
+                    // 顺位: 花名册序中, 我之前的在线成员均不在线 → 由我接管
+                    val successor = group.members.map { it.fp }
+                        .filter { it != group.ownerFp }
+                        .firstOrNull { fp ->
+                            fp == myFp || (seen?.get(fp) ?: 0L) > now - MEMBER_TIMEOUT_MS
+                        }
+                    if (successor == myFp) executeTakeover(group, now)
+                }
+            }
+        }
+    }
+
+    /**
+     * 群主侧: 清退失联成员 (隐式退群)
+     *
+     * 成员关闭应用 = 本地群态已焚, 无从告别; 群主按在场表清退,
+     * 轮换密钥并对余员重发 KEY —— 失联者即使重启也已不在册。
+     */
+    private fun ownerPruneExpiredMembers(group: com.engine.data.EngineGroup, now: Long) {
+        val seen = presenceSeen[group.id] ?: return
+        val expired = group.members.map { it.fp }
+            .filter { it != group.ownerFp }
+            .filter { (seen[it] ?: 0L) <= now - MEMBER_TIMEOUT_MS }
+        if (expired.isEmpty()) return
+
+        groupStore.setMembers(group.id, group.members.filterNot { it.fp in expired })
+        rotateGroupKey(group.id)
+        Log.i(TAG, "Group ${group.id.take(8)}... pruned ${expired.size} absent member(s)")
+    }
+
+    /**
+     * 主权顺移: 顺位成员接管群 (v3.14.1 核心)
+     *
+     * 1. 依在场表收缩花名册 (仅保留在线者), 自任群主
+     * 2. 轮换群密钥 (keyVersion+1) —— 旧群主/失联者持有的旧钥即刻作废
+     * 3. 生成全新邀请码并向中继登记 (旧码仍映射旧群主, 自然作废)
+     * 4. 向余员重发 KEY (携带新主/新册/新钥/新码)
+     *
+     * 接收端经 applyGroupKey 守卫校验 (版本单调 + 旧主失联 + 声明者在册)
+     * 后落地; 若多方同时接管, 同版本异主信令先到先得, 后到被拒。
+     */
+    private fun executeTakeover(group: com.engine.data.EngineGroup, now: Long) {
+        val myFp = sessionManager.identityFingerprint ?: return
+        val seen = presenceSeen[group.id]
+        val R = com.securesocial.core.protocol.GroupRoles
+
+        val keptFps = group.members.map { it.fp }
+            .filter { it != group.ownerFp && it != myFp }
+            .filter { fp -> (seen?.get(fp) ?: 0L) > now - MEMBER_TIMEOUT_MS }
+        val meOld = group.members.first { it.fp == myFp }
+        val newRoster = listOf(meOld.copy(role = R.OWNER)) +
+                group.members.filter { it.fp in keptFps }
+        val dropped = group.members.size - newRoster.size
+
+        val newCode = com.securesocial.core.protocol.InviteCode.generate()
+        val newGroup = group.copy(
+            ownerFp = myFp,
+            myRole = R.OWNER,
+            members = newRoster,
+            groupKey = groupCrypto.generateGroupKey(),
+            keyVersion = group.keyVersion + 1,
+            inviteCode = newCode,
+            inviteConfirmed = false
+        )
+        groupStore.upsert(newGroup)
+        seedPresence(newGroup.id, newRoster.map { it.fp })
+
+        newGroup.members.map { it.fp }
+            .filter { it != myFp }
+            .forEach { sendGroupCtrlTo(it, keyCtrlFor(newGroup)) }
+        relayManager.sendRoomRegister(newCode)
+
+        Log.i(
+            TAG, "Takeover: group ${group.id.take(8)}... owner migrated to me, " +
+                    "${keptFps.size} kept, $dropped dropped, key v${newGroup.keyVersion}"
+        )
+    }
+
+    /** 在场表播种 (新群/入群/接管/花名册更新时, 给予失联判定宽限) */
+    private fun seedPresence(groupId: String, fps: List<String>) {
+        val now = System.currentTimeMillis()
+        val seen = presenceSeen.getOrPut(groupId) { ConcurrentHashMap() }
+        fps.forEach { fp -> seen.putIfAbsent(fp, now) }
     }
 
     /** 退群 (成员) / 解散 (群主) */

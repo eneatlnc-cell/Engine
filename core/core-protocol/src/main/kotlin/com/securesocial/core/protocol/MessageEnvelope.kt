@@ -277,6 +277,14 @@ object GroupCtrlActions {
 
     /** 群主 → 全员: 解散群组 */
     const val DISSOLVE = "DISSOLVE"
+
+    /**
+     * 成员 → 成员: 在线心跳 (v3.14.1 主权顺移)
+     *
+     * 每 30s 一跳, 接收方据此维护 (groupId → 成员 → lastSeen) 在场表;
+     * 群主失联超 90s 时由顺位首位在线成员接管群主权。
+     */
+    const val PRESENCE = "PRESENCE"
 }
 
 /**
