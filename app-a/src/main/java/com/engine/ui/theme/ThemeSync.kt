@@ -12,6 +12,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
@@ -28,7 +31,7 @@ import androidx.core.view.WindowCompat
  *    animatedColorScheme 只插值了 24 个颜色角色, 漏掉了
  *    surfaceContainerHigh/Low/Highest/Lowest、surfaceBright/Dim、
  *    inverseSurface、inverseOnSurface、inversePrimary、scrim 共 10 个。
- *    而 M3 的 DropdownMenu 容器色恰恰是 surfaceContainerHigh ——
+ *    而 M3 DropdownMenu 容器色恰恰是 surfaceContainerHigh ——
  *    切主题的 420ms 里全屏都在渐变, 唯独菜单面板瞬间跳变,
  *    叠上加重的 elevation 投影, 就成了视频里的 "影子 / 重影"。
  *
@@ -36,6 +39,27 @@ import androidx.core.view.WindowCompat
  *    1. 单一 progress ∈ [0,1] 同时驱动全部 35 个色彩角色 (统一时钟);
  *    2. 背景渐变端点直接取自插值后的 scheme (背景与组件同源同钟);
  *    3. 状态栏底色取渐变顶端同款颜色 (状态栏-顶栏-内容无缝一体)。
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ *  v3.9 · 白天模式掉帧修复 —— "夜间丝滑 / 白天一卡一卡"
+ * ═══════════════════════════════════════════════════════════════════
+ *
+ *  病灶 ① 状态栏窗口事务每帧触发 (v3.8 引入的回归):
+ *    SideEffect 在每次重组后执行 —— 不只主题切换的 420ms,
+ *    列表滚动/呼吸动画期间也每帧执行 window.statusBarColor 写入。
+ *    每次写入都是一次系统窗口事务 (binder → system_server);
+ *    app 全局 FLAG_SECURE (防截屏) 下窗口只能 GPU 合成,
+ *    系统栏事务最易掉帧。白天模式 = 亮色栏 + 深色图标翻转,
+ *    事务代价与视觉可见度都最高。
+ *    修复: 颜色量化 (每通道 16 级内不变不写, 整段过渡 ≤ 8 次),
+ *          图标深浅仅在真正翻转时写一次。
+ *
+ *  病灶 ② 亮背景把帧抖 "放大" 了:
+ *    深色相邻色明度差极小 (#141120→#211D33), 掉帧肉眼不可见;
+ *    白天从纸白渐变到紫灰, 跨度大, 同样的帧抖全部显形
+ *    (暗色 UI 天然藏帧抖的经典现象)。
+ *    修复: glow 随主题时钟自适应 (白天 0.45× → 夜间 1×),
+ *          白天的色彩场更 "静", 帧抖可见度随之下降。
  */
 
 /**
@@ -139,17 +163,38 @@ fun EngineSyncedTheme(
         label = "engineThemeProgress",
     )
     val scheme = lerpColorScheme(lightScheme, darkScheme, progress)
-    val background = engineBackgroundBrush(scheme, glow)
 
-    // 状态栏底色 = 渐变顶端同款 → 状态栏/顶栏/背景连成一片
+    // ── v3.9: glow 自适应 ─────────────────────────────────────
+    // 亮背景色彩跨度大, 同样的帧抖全部显形 (暗色天然藏帧抖);
+    // 白天收敛到 0.45×, 夜间保持 1×。随同一时钟插值, 无跳变。
+    val glowNow = glow * (0.45f + 0.55f * progress)
+
+    val background = engineBackgroundBrush(scheme, glowNow)
+
+    // ── v3.9: 状态栏节流写入 ─────────────────────────────────
+    // v3.8 病灶: SideEffect 每次重组后都执行 —— 滚动/呼吸动画期间
+    // 也每帧写 window.statusBarColor (每次 = 一次系统窗口事务)。
+    // 现按通道量化: 变化不足 1/16 不写, 整段过渡 ≤ 8 次;
+    // 图标深浅仅在真正翻转时写一次。
     val view = LocalView.current
+    var lastBarArgb by remember { mutableStateOf(0) }
+    var lastLightIcons by remember { mutableStateOf<Boolean?>(null) }
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as? Activity)?.window ?: return@SideEffect
-            @Suppress("DEPRECATION")
-            window.statusBarColor = lerp(scheme.surface, scheme.primary, glow).toArgb()
-            WindowCompat.getInsetsController(window, view)
-                .isAppearanceLightStatusBars = !darkTheme
+            val argb = lerp(scheme.surface, scheme.primary, glowNow).toArgb()
+            // 每通道只比较高 4 位: 不足一级视为没变, 不触发窗口事务
+            if ((argb xor lastBarArgb) and 0xF0F0F0F0.toInt() != 0) {
+                @Suppress("DEPRECATION")
+                window.statusBarColor = argb
+                lastBarArgb = argb
+            }
+            val lightIcons = !darkTheme
+            if (lastLightIcons != lightIcons) {
+                WindowCompat.getInsetsController(window, view)
+                    .isAppearanceLightStatusBars = lightIcons
+                lastLightIcons = lightIcons
+            }
         }
     }
 

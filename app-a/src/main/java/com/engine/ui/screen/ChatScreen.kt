@@ -99,7 +99,9 @@ fun ChatScreen(
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent
+                        containerColor = Color.Transparent,
+                        // v3.9: 滚动态也透明 (同 ChatListScreen, 见注释)
+                        scrolledContainerColor = Color.Transparent
                     )
                 )
                 ConnectionStatusBar(state = uiState.connectionState)

@@ -120,7 +120,10 @@ fun ChatListScreen(
             TopAppBar(
                 // 顶栏透明: 状态栏 (同渐变顶端色) / 顶栏 / 内容连成一片
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent
+                    containerColor = Color.Transparent,
+                    // v3.9: 滚动态也透明 —— 默认值是不透明 surfaceContainer,
+                    // 亮色下滚动时会以灰块盖住渐变 (深色两色相近不显)
+                    scrolledContainerColor = Color.Transparent
                 ),
                 // X (Twitter) 式居中标识: 两侧各占 48dp (左占位 + 右菜单按钮),
                 // 标题在剩余空间内绝对居中; 大写 + 加宽字距强化品牌感
