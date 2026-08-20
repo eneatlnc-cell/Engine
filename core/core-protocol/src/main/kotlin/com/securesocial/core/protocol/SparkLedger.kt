@@ -14,7 +14,8 @@ import java.security.MessageDigest
  *   服务端用开户时登记的公钥验签)
  *
  * 计费模型 (本地预扣 + 批量结算 + 服务端权威):
- * - 发一条消息 = 1 Spark, 单条消息 ≤ 1KB (UTF-8 字节)
+ * - 发一条消息 = 1 Spark (文字/图片/表情/贴纸同价), 单条消息 ≤ 60KB (UTF-8 字节,
+ *   v3.17: 由 1KB 上调, 支持图片/表情/贴纸内联发送, 参考 Telegram 贴纸量级)
  * - 客户端本地预扣余额视图 (零额外延迟), 每累计 N 条 / 定时批量上报
  *   totalSent (单调递增), 服务端按差值扣减并回传权威余额, 客户端校正本地视图
  * - 防作弊边界: 客户端篡改少报 → 服务端余额与上报值同步锁定,
@@ -59,8 +60,8 @@ object SparkEconomy {
     /** 每日登录领取额 */
     const val DAILY_CLAIM = 1000L
 
-    /** 单条消息字节上限 (UTF-8) */
-    const val MAX_MESSAGE_BYTES = 1024
+    /** 单条消息字节上限 (UTF-8): 60KB, 覆盖图片/表情/贴纸 (v3.17 由 1KB 上调) */
+    const val MAX_MESSAGE_BYTES = 60 * 1024
 
     /** 批量结算阈值: 未上报条数达到此值立即结算 */
     const val SETTLE_BATCH = 10

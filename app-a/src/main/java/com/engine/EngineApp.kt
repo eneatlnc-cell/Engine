@@ -24,6 +24,7 @@ import com.securesocial.core.protocol.ErrorCodes
 import com.securesocial.core.protocol.ProtocolSerializer
 import com.securesocial.core.protocol.RelayAuth
 import com.securesocial.core.protocol.SignalPayload
+import com.securesocial.core.protocol.SparkEconomy
 import com.securesocial.core.ipc.IpcCallback
 import com.securesocial.core.ipc.IpcErrorCode
 import kotlinx.coroutines.CoroutineScope
@@ -76,7 +77,35 @@ class EngineApp : Application() {
     private val groupCrypto = com.engine.crypto.GroupCryptoManager()
 
     // ---- v3.14: 群消息防重放 ((groupId:source) → 已见最大 seq) ----
-    private val lastGroupSeq = ConcurrentHashMap<String, Long>()
+    private val lastGroupSeq = SeqGuard()
+
+    /**
+     * v3.17 防重放记录器: source → 已见最大 seq, 带条目上限。
+     *
+     * 原裸 ConcurrentHashMap 无淘汰策略, 长期运行下 (大量对端 + 群组)
+     * 条目只增不减 —— 诊断发现的内存无限增长风险。超出上限按插入序
+     * 淘汰最旧记录; 被淘汰 source 的防重放保护重置 (接受极旧重放),
+     * 以有界内存换取长期稳定性。
+     */
+    private class SeqGuard(private val maxEntries: Int = 2048) {
+        private val map = LinkedHashMap<String, Long>(64, 0.75f, false)
+
+        @Synchronized
+        fun isReplay(key: String, seq: Long): Boolean = seq <= (map[key] ?: 0L)
+
+        @Synchronized
+        fun record(key: String, seq: Long) {
+            map[key] = seq
+            if (map.size > maxEntries) {
+                val it = map.entries.iterator()
+                var toDrop = map.size - maxEntries
+                while (toDrop-- > 0 && it.hasNext()) {
+                    it.next()
+                    it.remove()
+                }
+            }
+        }
+    }
 
     // ---- v3.14: 待发群控制信令 (peer → 队列; 会话密钥建立后冲刷) ----
     private val pendingCtrlQueue = ConcurrentHashMap<String, MutableList<com.securesocial.core.protocol.GroupCtrlPayload>>()
@@ -153,13 +182,15 @@ class EngineApp : Application() {
     private var lastChallengeFailAt: Long = 0L
 
     // ---- v2: 消息防重放 (source → 已见最大 seq) ----
-    private val lastSeqBySource = ConcurrentHashMap<String, Long>()
+    // v3.17: 由裸 ConcurrentHashMap 换为带上限的 SeqGuard, 防
+    // lastSeqBySource 无淘汰策略导致长期运行内存无限增长 (诊断发现的低危风险)。
+    private val lastSeqBySource = SeqGuard()
 
     // ---- v3.14.2: 群控制信令防重放 (source → 已见最大 seq; 审计修复: 与 1:1 MSG 分离) ----
     // 原: GROUP_CTRL 与 MSG 共用 lastSeqBySource —— 两类消息 seq 各自独立推进,
     // 共享映射会把对方类型的合法新消息误判为重放 (可用性缺陷), 且语义混淆。
     // AAD 不同已阻断跨类型密文移植, 分离后两条路径各自严格单调。
-    private val lastCtrlSeqBySource = ConcurrentHashMap<String, Long>()
+    private val lastCtrlSeqBySource = SeqGuard()
 
     // ---- v2: 发送序列号 (时间戳初始化: 进程重启不回落) ----
     private val msgSeqCounter = AtomicLong(System.currentTimeMillis())
@@ -389,7 +420,7 @@ class EngineApp : Application() {
             }
 
             override fun onGroupCtrl(source: String, target: String?, groupId: String?, payload: String, seq: Long) {
-                handleIncomingGroupCtrl(source, target, groupId, payload, seq)
+                handleIncomingGroupCtrl(source, target, payload, seq)
             }
 
             override fun onRoomInfo(info: com.securesocial.core.protocol.RoomInfoPayload) {
@@ -524,15 +555,14 @@ class EngineApp : Application() {
             }
 
             // 防重放: seq 单调递增检查
-            val lastSeq = lastSeqBySource[source] ?: 0L
-            if (seq <= lastSeq) {
+            if (lastSeqBySource.isReplay(source, seq)) {
                 Log.w(TAG, "Dropped replayed/out-of-order message from ${source.take(8)}...")
                 return
             }
 
             val aad = aesGcm.buildMessageAad(source, myFp, seq)
             val plaintext = cryptoManager.decryptMessage(encryptedPayload, source, aad)
-            lastSeqBySource[source] = seq
+            lastSeqBySource.record(source, seq)
 
             val msg = ChatMessage(
                 peerFingerprint = source,
@@ -596,7 +626,8 @@ class EngineApp : Application() {
      * @return false 表示无法发起 (无身份/未登录)
      */
     fun initiateKeyExchange(peerFingerprint: String): Boolean {
-        val myFp = sessionManager.identityFingerprint ?: return false
+        // 门控: 无身份/未登录直接失败 (v3.17: 原变量 myFp 从未使用, 仅保留守卫)
+        sessionManager.identityFingerprint ?: return false
         val myIdPub = sessionManager.getIdentityPublicKeyEncoded() ?: return false
 
         if (sessionManager.getSessionKey(peerFingerprint) == null) {
@@ -623,10 +654,30 @@ class EngineApp : Application() {
     }
 
     /**
+     * v3.17: 本地消息体护栏 — UTF-8 字节数 ≤ SparkEconomy.MAX_MESSAGE_BYTES (60KB)。
+     *
+     * 按 UTF-8 字节而非字符数计算 (中英文/Emoji 同权), 与服务端
+     * (中继按信封全文长度) 及计费口径一致。图片/表情/贴纸等媒体
+     * 载荷应在上游压缩至限额内或转为引用发送。
+     */
+    private fun exceedsMessageLimit(text: String): Boolean =
+        text.toByteArray(Charsets.UTF_8).size > SparkEconomy.MAX_MESSAGE_BYTES
+
+    /**
      * 统一发送入口 (v2): 加密 (AAD 绑定 seq) → 中继发送 → 更新状态
+     *
+     * v3.17: 发送前按 SparkEconomy.MAX_MESSAGE_BYTES (60KB) 做本地护栏,
+     * 超限消息直接判失败, 不再依赖服务端拒绝 —— 图片/表情/贴纸等
+     * 媒体载荷同价计费, 超限应在上游压缩或转引用。
      */
     fun sendMessageToPeer(peerFingerprint: String, messageId: String, text: String) {
         val myFp = sessionManager.identityFingerprint ?: return
+
+        if (exceedsMessageLimit(text)) {
+            Log.w(TAG, "Message rejected: exceeds ${SparkEconomy.MAX_MESSAGE_BYTES}B limit")
+            messageStore.updateMessageStatus(messageId, MessageStatus.FAILED)
+            return
+        }
 
         if (cryptoManager.hasSessionKey(peerFingerprint)) {
             val seq = msgSeqCounter.incrementAndGet()
@@ -788,10 +839,20 @@ class EngineApp : Application() {
      *
      * 群密钥加密一次 (AAD 与接收者无关) → 按成员扇出同一份密文;
      * 任一投递成功即视为已发送 (中继离线即丢弃, 无离线补投)。
+     *
+     * v3.17: 与 1:1 消息同口径的 60KB 本地护栏 (群密文按成员扇出 N 份,
+     * 超限媒体消息在群场景会放大中继流量, 更应在上游压缩)。
      */
     fun sendGroupMessage(groupId: String, messageId: String, text: String) {
         val myFp = sessionManager.identityFingerprint ?: return
         val group = groupStore.getGroup(groupId) ?: return
+
+        if (exceedsMessageLimit(text)) {
+            Log.w(TAG, "Group message rejected: exceeds ${SparkEconomy.MAX_MESSAGE_BYTES}B limit")
+            messageStore.updateMessageStatus(messageId, MessageStatus.FAILED)
+            return
+        }
+
         val key = group.groupKey ?: run {
             messageStore.updateMessageStatus(messageId, MessageStatus.FAILED)
             return
@@ -825,7 +886,7 @@ class EngineApp : Application() {
             val key = group.groupKey ?: return
 
             val seqKey = "$groupId:$source"
-            if (seq <= (lastGroupSeq[seqKey] ?: 0L)) return
+            if (lastGroupSeq.isReplay(seqKey, seq)) return
 
             val aad = groupCrypto.buildGroupAad(groupId, source, seq)
             val text = try {
@@ -835,7 +896,7 @@ class EngineApp : Application() {
                 maybeRequestGroupKey(group)
                 return
             }
-            lastGroupSeq[seqKey] = seq
+            lastGroupSeq.record(seqKey, seq)
 
             val senderName = group.members.find { it.fp == source }?.nickname
                 ?: "用户 ${source.take(8)}"
@@ -858,19 +919,19 @@ class EngineApp : Application() {
     /**
      * 收到群控制信令: 成对解密后按 action 分发
      */
-    private fun handleIncomingGroupCtrl(source: String, target: String?, groupId: String?, payload: String, seq: Long) {
+    private fun handleIncomingGroupCtrl(source: String, target: String?, payload: String, seq: Long) {
         val myFp = sessionManager.identityFingerprint ?: return
         if (target != null && target != myFp) return
 
         // v3.14.2: 独立计数器 (原与 MSG 共享 → 类型间互相顶号, 合法信令被误拒)
-        if (seq <= (lastCtrlSeqBySource[source] ?: 0L)) return
+        if (lastCtrlSeqBySource.isReplay(source, seq)) return
         val aad = aesGcm.buildMessageAad(source, myFp, seq)
         val plaintext = try {
             cryptoManager.decryptMessage(payload, source, aad)
         } catch (e: Exception) {
             return
         }
-        lastCtrlSeqBySource[source] = seq
+        lastCtrlSeqBySource.record(source, seq)
 
         val ctrl = ProtocolSerializer.decodeGroupCtrlPayload(plaintext) ?: return
         val A = com.securesocial.core.protocol.GroupCtrlActions

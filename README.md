@@ -33,7 +33,7 @@ engine/
 | ECDH 公钥中间人替换 | SIGNAL 信令携带身份签名, 接收端验签且指纹匹配才采纳 |
 | 消息重放/移植 | GCM AAD 绑定 (source, target, seq) + 接收端 seq 单调递增校验 |
 | 身份漂移 | 绑定公钥持久化, 二次启动恢复同一身份, 绝不静默生成新身份 |
-| 资源滥用 | 单 IP 连接配额 / 20 msg/s 速率限制 / 64KB 载荷上限 / 认证 30s 超时 |
+| 资源滥用 | 单 IP 连接配额 / 20 msg/s 速率限制 / 128KB 载荷上限 (v3.17: 支撑 60KB 媒体消息) / 认证 30s 超时 |
 
 ## 构建与运行
 
@@ -69,6 +69,16 @@ engine/
 ## 中继服务器 VPS 部署 (生产)
 
 推荐拓扑: **中继仅监听 127.0.0.1, 由 Nginx/Caddy 终结 TLS 后以 wss:// 对外暴露**。
+
+**部署地选择 (v3.17 定案): 推荐 香港 VPS**。
+
+- Engine 定位为安全加密社交应用, 中继是全流量必经点 —— 选址直接决定
+  延迟与连通性。香港对中国大陆/东亚用户延迟低 (通常 30-80ms),
+  国际带宽充足, 对 wss:// 长连接无干扰。
+- 中继零状态零落盘 (仅路由密文), 换机/迁移只需改 DNS —— 选址不构成
+  长期锁定风险。
+- 注意: 需选择支持无限流/高流量包的套餐, 媒体消息 (60KB/条) 上线后
+  流量画像会显著高于纯文本时代。
 
 ### 1. 构建并上传
 
@@ -180,6 +190,24 @@ curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
 - [x] 中继仅接触密文, 不解析 payload, 不落盘, 无账号体系
 - [x] IPC 回调全部验签, 未验签回调不可作为任何安全判定依据
 - [x] 全局 FLAG_SECURE 防截屏
+
+## v3.17 变更记录
+
+本批为诊断报告落地修复 + 媒体消息能力升级:
+
+| 项 | 内容 |
+|------|------|
+| 消息上限 | `SparkEconomy.MAX_MESSAGE_BYTES` 1KB → **60KB**; 图片/表情/贴纸可直接装载 (Base64 后 ≈80KB 密文) |
+| 信封上限 | `MessageEnvelope.MAX_PAYLOAD_SIZE` 64KB → **128KB** (覆盖 60KB 明文 × 加密 + Base64 膨胀系数 4/3 + 信封开销), 中继服务端同源常量自动生效 |
+| 本地护栏 | `sendMessageToPeer` / `sendGroupMessage` 发送前按 UTF-8 字节预检, 超限直接判失败, 不再依赖服务端拒绝 |
+| 防重放内存 | 三处防重放计数器 (1:1 / 群消息 / 群控制) 由裸 `ConcurrentHashMap` 换为带 2048 条上限的 `SeqGuard`, 修复长期运行内存无限增长 |
+| IPC 日志泄露 | sign 请求 payload 与 callback 的 sig/result 移出 URI 查询串, 改走 Intent Extra —— 不再随 ActivityTaskManager 的 START 日志进 logcat (双端同步, 旧 URI 参数保留解析兼容) |
+| 构建可复现 | 补齐真 Gradle Wrapper (8.5); 清除误提交的沙箱代理配置 (机器级代理请放 `~/.gradle/gradle.properties`) |
+| 版本 | versionName 3.17.0 / versionCode 2 |
+
+贴纸格式约定: 动态贴纸单帧 PNG/WebP 透明底, 512×512, 动态版本
+(WebP/Lottie 类 .tgs 思路) 压缩后须 ≤ 60KB —— 与单条消息上限同口径,
+保证贴纸以 "一条消息" 端到端直达, 无需 CDN 引用。
 
 ## 功能边界 (1.0)
 

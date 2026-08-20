@@ -105,17 +105,23 @@ class AppBIpcClient(private val context: Context) {
     /**
      * 请求 Vault 用绑定的身份私钥签名 (v2 新增)
      *
+     * v3.17: 待签字节经 Intent Extra (EXTRA_PAYLOAD) 投递, URI 只保留
+     * session/app 路由字段 —— Intent data 会随 ActivityTaskManager 的
+     * "START u0" 日志行整体进 logcat, 挑战 nonce / ECDH 公钥不得进 URI。
+     *
      * @param sessionId      会话标识
      * @param payloadBytes   待签字节
      * @return true 表示请求已发出 (结果经 callback 异步返回, result 字段为 Base64 签名)
      */
     fun launchSign(sessionId: String, payloadBytes: ByteArray): Boolean {
         val payloadBase64 = java.util.Base64.getEncoder().encodeToString(payloadBytes)
-        val uriString = IpcContract.buildSignUri(sessionId, payloadBase64, context.packageName)
+        val uriString = IpcContract.buildSignUri(sessionId, context.packageName)
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uriString)).apply {
             setPackage(IpcContract.VAULT_PACKAGE)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            // v3.17: 载荷走 Extra, 不进 URI (防系统日志泄露)
+            putExtra(IpcContract.EXTRA_PAYLOAD, payloadBase64)
         }
         return try {
             context.startActivity(intent)
@@ -127,11 +133,13 @@ class AppBIpcClient(private val context: Context) {
 
     /**
      * 解析 myvault://callback 回调 Intent
+     *
+     * v3.17: sig/result 优先读 Intent Extra (新版 Vault 投递方式),
+     * Extra 缺失时由模型层回退 URI 查询参数 (兼容旧版 Vault)。
      */
     fun handleCallbackIntent(intent: Intent?): IpcCallback? {
         if (intent == null) return null
-        val data: Uri = intent.data ?: return null
-        return IpcCallback.fromUri(data)
+        return IpcCallback.fromIntent(intent)
     }
 
     /**

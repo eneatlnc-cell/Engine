@@ -317,7 +317,14 @@ data class GroupCtrlPayload(
 object ProtocolConstants {
     const val HEARTBEAT_INTERVAL_MS = 30_000L
     const val HEARTBEAT_TIMEOUT_MS = 60_000L
-    const val MAX_PAYLOAD_SIZE = 64 * 1024       // 64KB (v2: 服务端强制执行)
+    /**
+     * WebSocket 单帧 (JSON 信封全文) 字节数上限 (v2 服务端强制执行)。
+     *
+     * v3.17: 64KB → 128KB。消息密文以 Base64 装载于 JSON 信封 (膨胀系数 4/3),
+     * SparkEconomy.MAX_MESSAGE_BYTES=60KB 的明文经加密+Base64 后约 80.1KB,
+     * 叠加信封字段与转义开销, 128KB 为 60KB 媒体消息留足余量。
+     */
+    const val MAX_PAYLOAD_SIZE = 128 * 1024
     const val WEBSOCKET_PATH = "/relay"
 
     /** v2: 注册挑战应答超时 (未完成认证的连接将被断开) */
