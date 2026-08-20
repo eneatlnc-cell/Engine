@@ -12,10 +12,9 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.19: 群详情页 (成员列表/在线状态) + P2 门禁审批 (AUTO/APPROVAL) +
-        // 邀请码刷新 + 入群拒绝反馈 (GROUP_FULL/JOIN_REJECTED)
-        versionCode = 6
-        versionName = "3.19.0"
+        // v3.20: Spark 表情包系统 (面板/大表情渲染/引用式发送链路)
+        versionCode = 7
+        versionName = "3.20.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

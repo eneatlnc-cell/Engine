@@ -113,6 +113,34 @@ class ChatViewModel(
     }
 
     /**
+     * v3.20: 发送 Spark 贴纸
+     *
+     * 线格式引用经既有加密链路发送 (与文本同价, 17 字节):
+     * 会话列表预览写 "👋 Spark 表情", 消息体 text 存线格式原文。
+     */
+    fun sendSticker(sticker: com.engine.data.StickerCatalog.Sticker) {
+        val now = System.currentTimeMillis()
+        val message = ChatMessage(
+            id = UUID.randomUUID().toString(),
+            peerFingerprint = peerFingerprint,
+            text = sticker.wire,
+            isMine = true,
+            timestamp = now,
+            status = MessageStatus.PENDING,
+            stickerId = sticker.id
+        )
+
+        messageStore.addMessage(peerFingerprint, message)
+        if (!isGroup) {
+            contactStore.updateLastMessage(peerFingerprint, sticker.preview, now)
+        }
+
+        viewModelScope.launch {
+            doSend(message)
+        }
+    }
+
+    /**
      * 手动重发失败消息
      */
     fun resendMessage(messageId: String) {

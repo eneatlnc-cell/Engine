@@ -358,6 +358,11 @@ class EngineApp : Application() {
 
         setupRelayCallback()
         startGroupPresenceLoop()
+
+        // v3.20: Spark 表情包目录加载 (后台一次性, 60 条 JSON 索引)
+        appScope.launch {
+            com.engine.data.StickerCatalog.load(this@EngineApp)
+        }
     }
 
     /**
@@ -625,15 +630,22 @@ class EngineApp : Application() {
             val plaintext = cryptoManager.decryptMessage(encryptedPayload, source, aad)
             lastSeqBySource.record(source, seq)
 
+            // v3.20: 贴纸引用解析 (未收录 ID → null → 按普通文本渲染)
+            val sticker = com.engine.data.StickerCatalog.parseWire(plaintext)
             val msg = ChatMessage(
                 peerFingerprint = source,
                 text = plaintext,
                 isMine = false,
                 timestamp = System.currentTimeMillis(),
-                status = MessageStatus.DELIVERED
+                status = MessageStatus.DELIVERED,
+                stickerId = sticker?.id
             )
             messageStore.addMessage(source, msg)
-            contactStore.updateLastMessage(source, plaintext, msg.timestamp)
+            contactStore.updateLastMessage(
+                source,
+                com.engine.data.StickerCatalog.previewOf(plaintext),
+                msg.timestamp
+            )
 
             if (contactStore.getContact(source) == null) {
                 contactStore.addContact(source, "用户 ${source.take(8)}")
@@ -959,7 +971,12 @@ class EngineApp : Application() {
             messageId,
             if (sent) MessageStatus.SENT else MessageStatus.FAILED
         )
-        groupStore.updateLastMessage(groupId, text, System.currentTimeMillis())
+        // v3.20: 会话列表预览 (贴纸引用 → "👋 Spark 表情")
+        groupStore.updateLastMessage(
+            groupId,
+            com.engine.data.StickerCatalog.previewOf(text),
+            System.currentTimeMillis()
+        )
     }
 
     /**
@@ -1038,16 +1055,24 @@ class EngineApp : Application() {
             val senderName = group.members.find { it.fp == source }?.nickname
                 ?: "用户 ${source.take(8)}"
             val convKey = com.engine.data.EngineGroup.conversationKey(groupId)
+            // v3.20: 贴纸引用解析 (未收录 → 普通文本)
+            val sticker = com.engine.data.StickerCatalog.parseWire(text)
             val msg = ChatMessage(
                 peerFingerprint = convKey,
                 text = text,
                 isMine = false,
                 timestamp = System.currentTimeMillis(),
                 status = MessageStatus.DELIVERED,
-                senderName = senderName
+                senderName = senderName,
+                stickerId = sticker?.id
             )
             messageStore.addMessage(convKey, msg)
-            groupStore.updateLastMessage(groupId, "$senderName: $text", msg.timestamp)
+            // v3.20: 贴纸预览 (引用原文不入列表)
+            groupStore.updateLastMessage(
+                groupId,
+                if (sticker != null) "$senderName: ${sticker.preview}" else "$senderName: $text",
+                msg.timestamp
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Group message handling failed: ${e.message}")
         }

@@ -27,6 +27,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,9 +58,22 @@ fun MessageBubble(
     message: ChatMessage,
     modifier: Modifier = Modifier,
     isMarked: Boolean = false,
-    onLongPress: (() -> Unit)? = null
+    onLongPress: (() -> Unit)? = null,
+    onStickerClick: (() -> Unit)? = null
 ) {
     val isMine = message.isMine
+
+    // v3.20: 贴纸消息 —— 无气泡大表情 (Telegram 风格)
+    // 引用未收录 (版本错配/自定义包) 时 stickerId 为 null, 走普通文本气泡
+    if (message.stickerId != null) {
+        StickerBubble(
+            message = message,
+            isMarked = isMarked,
+            onLongPress = onLongPress,
+            onClick = onStickerClick
+        )
+        return
+    }
 
     Row(
         modifier = modifier
@@ -218,4 +232,90 @@ private fun StatusIcon(status: MessageStatus) {
 private fun formatMessageTime(timestamp: Long): String {
     val sdf = SimpleDateFormat("HH:mm", Locale.getDefault())
     return sdf.format(Date(timestamp))
+}
+
+/**
+ * v3.20: 贴纸气泡 (Telegram 风格超大表情)
+ *
+ * - 无背景气泡: 140dp 动态贴纸直接落在对话流上 (透明底资产自边界)
+ * - 群消息保留发送者名 (小字, 上方)
+ * - 底部细时间行 (含状态图标/书签角标), 不抢贴纸视觉
+ * - 点击 → 全屏预览; 长按 → 标记菜单 (与文本一致)
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun StickerBubble(
+    message: ChatMessage,
+    isMarked: Boolean,
+    onLongPress: (() -> Unit)?,
+    onClick: (() -> Unit)?
+) {
+    val isMine = message.isMine
+    val sticker = remember(message.stickerId) {
+        com.engine.data.StickerCatalog.findById(message.stickerId!!)
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 3.dp),
+        horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start
+    ) {
+        if (sticker != null) {
+            Column(
+                horizontalAlignment = if (isMine) Alignment.End else Alignment.Start,
+                modifier = Modifier.combinedClickable(
+                    onClick = { onClick?.invoke() },
+                    onLongClick = { onLongPress?.invoke() }
+                )
+            ) {
+                // 群消息发送者名
+                if (!isMine) {
+                    message.senderName?.let { sender ->
+                        Text(
+                            text = sender,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontSize = 12.sp,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+                        )
+                    }
+                }
+                com.engine.ui.components.StickerImage(
+                    sticker = sticker,
+                    modifier = Modifier.size(140.dp)
+                )
+                // 时间行 (细, 半透明)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isMarked) {
+                        Icon(
+                            imageVector = Icons.Default.Bookmark,
+                            contentDescription = "已标记",
+                            modifier = Modifier.size(11.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.size(2.dp))
+                    }
+                    Text(
+                        text = formatMessageTime(message.timestamp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                        fontSize = 10.sp
+                    )
+                    if (isMine) {
+                        Spacer(modifier = Modifier.size(3.dp))
+                        StatusIcon(message.status)
+                    }
+                }
+            }
+        } else {
+            // 目录未收录 (理论不可达: stickerId 仅由目录校验后写入): 兜底文本气泡
+            Text(
+                text = message.text,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(8.dp)
+            )
+        }
+    }
 }

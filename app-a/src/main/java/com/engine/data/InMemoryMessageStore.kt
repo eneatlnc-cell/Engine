@@ -20,11 +20,12 @@ enum class MessageStatus {
  *
  * @param id              消息唯一 ID
  * @param peerFingerprint 对方公钥指纹 (会话标识; 群会话为 "grp:<groupId>")
- * @param text            消息明文
+ * @param text            消息明文 (贴纸为线格式引用 "[spark:st001_hello]", 与快照/预览共用)
  * @param isMine          是否为己方发送
  * @param timestamp       毫秒时间戳
  * @param status          发送状态
  * @param senderName      v3.14: 群消息发送者显示名 (1:1 会话为 null)
+ * @param stickerId       v3.20: 贴纸 ID (接收/发送时由线格式解析; null = 普通文本)
  */
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
@@ -33,7 +34,8 @@ data class ChatMessage(
     val isMine: Boolean,
     val timestamp: Long = System.currentTimeMillis(),
     val status: MessageStatus = MessageStatus.PENDING,
-    val senderName: String? = null
+    val senderName: String? = null,
+    val stickerId: String? = null
 )
 
 /**

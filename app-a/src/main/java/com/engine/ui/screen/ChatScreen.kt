@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -92,6 +93,12 @@ fun ChatScreen(
 
     // v3.16: 长按弹出的标记菜单目标消息 (null = 菜单收起)
     var markMenuMessage by remember { mutableStateOf<ChatMessage?>(null) }
+
+    // v3.20: 表情面板开合 + 贴纸全屏预览
+    var showStickerPanel by remember { mutableStateOf(false) }
+    var previewSticker by remember {
+        mutableStateOf<com.engine.data.StickerCatalog.Sticker?>(null)
+    }
 
     // 新消息到达时自动滚动到底部
     LaunchedEffect(uiState.messages.size) {
@@ -194,19 +201,54 @@ fun ChatScreen(
                     MessageBubble(
                         message = message,
                         isMarked = message.id in uiState.markedMessageIds,
-                        onLongPress = { markMenuMessage = message }
+                        onLongPress = { markMenuMessage = message },
+                        onStickerClick = {
+                            message.stickerId?.let { id ->
+                                com.engine.data.StickerCatalog.findById(id)
+                                    ?.let { previewSticker = it }
+                            }
+                        }
                     )
                 }
             }
 
-            // 底部输入栏
+            // 底部输入栏 (v3.20: + 表情面板开合)
             InputBar(
                 text = uiState.inputText,
-                onTextChange = { viewModel.updateInputText(it) },
+                onTextChange = {
+                    viewModel.updateInputText(it)
+                    if (showStickerPanel) showStickerPanel = false
+                },
                 onSend = { viewModel.sendMessage(it) },
-                enabled = uiState.connectionState == ConnectionState.CONNECTED
+                enabled = uiState.connectionState == ConnectionState.CONNECTED,
+                stickerMode = showStickerPanel,
+                onToggleSticker = { showStickerPanel = !showStickerPanel }
             )
+
+            // v3.20: Spark 表情面板 (替换键盘)
+            androidx.compose.animation.AnimatedVisibility(
+                visible = showStickerPanel,
+                enter = androidx.compose.animation.slideInVertically { it } +
+                    androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.slideOutVertically { it } +
+                    androidx.compose.animation.fadeOut()
+            ) {
+                com.engine.ui.components.StickerPickerPanel(
+                    onPick = { sticker ->
+                        viewModel.sendSticker(sticker)
+                        showStickerPanel = false
+                    }
+                )
+            }
         }
+    }
+
+    // v3.20: 贴纸全屏预览 (气泡点击)
+    previewSticker?.let { sticker ->
+        com.engine.ui.components.StickerPreviewDialog(
+            sticker = sticker,
+            onDismiss = { previewSticker = null }
+        )
     }
 
     // v3.16: 标记菜单 (长按消息弹出)
@@ -281,7 +323,9 @@ private fun InputBar(
     text: String,
     onTextChange: (String) -> Unit,
     onSend: (String) -> Unit,
-    enabled: Boolean
+    enabled: Boolean,
+    stickerMode: Boolean = false,
+    onToggleSticker: () -> Unit = {}
 ) {
     Row(
         modifier = Modifier
@@ -292,6 +336,20 @@ private fun InputBar(
             .imePadding(),
         verticalAlignment = Alignment.Bottom
     ) {
+        // v3.20: 表情面板开合键 (面板展开时高亮)
+        IconButton(
+            onClick = onToggleSticker,
+            modifier = Modifier.size(44.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.EmojiEmotions,
+                contentDescription = "表情",
+                tint = if (stickerMode) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+
         // 输入框 (默认 M3 颜色)
         OutlinedTextField(
             value = text,
