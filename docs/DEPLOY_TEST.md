@@ -1,7 +1,7 @@
 # Engine 部署与双端测试方案 (v3.21)
 
 > 目标: 一份文档跑通 **中继部署 → 双端安装 → E2E 验收** 全流程。
-> 生产 VPS 部署细节 (systemd/Nginx/防火墙) 见 README「中继服务器 VPS 部署」章节, 本文不重复。
+> 方案 C 的逐步落地命令 (systemd/Nginx TLS/防火墙/验收清单/运维回滚) 见 **[VPS_DEPLOY.md](VPS_DEPLOY.md)**; 本文侧重拓扑选择与测试矩阵。
 
 ## 0. 拓扑与前提
 
@@ -68,7 +68,7 @@ adb install app-a/build/outputs/apk/debug/app-a-debug.apk
 
 ## 方案 C: VPS 跨网络生产形态 (发布前必跑)
 
-按 README「中继服务器 VPS 部署」完成 systemd + Nginx TLS + 防火墙, 然后:
+按 **[VPS_DEPLOY.md](VPS_DEPLOY.md)** 完成 systemd + Nginx TLS + 防火墙, 然后:
 
 ```bash
 # release 包指向正式域名 (强制 TLS)

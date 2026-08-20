@@ -22,7 +22,8 @@ engine/
 ├── app-a/                           # Engine: 社交应用 (有 INTERNET, 除标记物外无持久化)
 ├── relay-server/                    # 无状态 WebSocket 中继 (Ktor + Netty, v2 挑战应答)
 └── docs/                            # 部署与测试方案
-    └── DEPLOY_TEST.md               # v3.21: 中继部署拓扑 + 双端 E2E 测试矩阵
+    ├── DEPLOY_TEST.md               # v3.21: 中继部署拓扑 + 双端 E2E 测试矩阵
+    └── VPS_DEPLOY.md                # v3.21: VPS 从零部署手册 (systemd/Nginx TLS/验收清单)
 ```
 
 ## v2 安全模型摘要
