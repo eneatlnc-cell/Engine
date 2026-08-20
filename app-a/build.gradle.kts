@@ -12,9 +12,9 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.22.1: FAB 重影根修 —— BottomCenter→BottomEnd, 消除展开/收起时主钮 ~44dp 布局瞬移
-        versionCode = 10
-        versionName = "3.22.1"
+        // v3.22.2: FAB 重影根修 —— 撤 CircleShape 描边, 消除正圆描边叠 M3E 超圆容器的双轮廓
+        versionCode = 11
+        versionName = "3.22.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

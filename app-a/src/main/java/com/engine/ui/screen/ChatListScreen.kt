@@ -36,7 +36,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -298,7 +297,8 @@ fun ChatListScreen(
             //   · 👥 添加联系人 → 跳联系人 Tab
             //   · 👥+ 新建群组  → 群组对话框 (群组协议 TODO #2)
             // FAB 图标旋转 45° 变 ✕; 再点收起。展开态点遮罩也收起。
-            // v3.10 无影语言延续: 全部圆钮 shadowElevation=0 + 发丝描边
+            // v3.10 无影语言: 全部圆钮 elevation 全零; 药丸保留发丝描边
+            // (描边与裁剪同形 18dp), 主 FAB 无描边 (v3.22.2 撤圆形描边)
             AnimatedVisibility(
                 visible = selectedTab == 0,
                 enter = scaleIn(
@@ -369,14 +369,16 @@ fun ChatListScreen(
                             focusedElevation = 0.dp,
                             hoveredElevation = 0.dp,
                         ),
-                        // 发丝描边 (m3 FAB 无 border 参数, 用 Modifier 补)
-                        modifier = Modifier.border(
-                            border = BorderStroke(
-                                1.dp,
-                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
-                            ),
-                            shape = CircleShape
-                        )
+                        // v3.22.2 重影根修: 撤掉 CircleShape 发丝描边 (用户实拍定位)。
+                        // 真凶: 容器是 M3E 超圆方形 (m3 1.2.0 默认
+                        // FloatingActionButtonDefaults.shape → 主题 shapes.large
+                        // = 24dp 圆角), 描边却是正圆 —— 圆内切于方, 四角弧瓣
+                        // 各超出圆 ~6.6dp, 两套轮廓叠出 "重影"。
+                        // 考古: v3.10 写的是 M2 式 border= 参数 (M3 FAB 无此参数,
+                        // 从未编译过); v3.16 首次编译改成 Modifier+CircleShape
+                        // 才真正上屏 —— 重影自首个可安装包即存在, 弹簧(v3.22.0)/
+                        // 对齐(v3.22.1)两轮修复均未触及。M3E FAB 本就无描边,
+                        // 容器色块自成层次。
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Add,
