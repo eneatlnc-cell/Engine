@@ -12,9 +12,9 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.20: Spark 表情包系统 (面板/大表情渲染/引用式发送链路)
-        versionCode = 7
-        versionName = "3.20.0"
+        // v3.21: 标记物系统完善 (贴纸快照/搜索分类/导出)
+        versionCode = 8
+        versionName = "3.21.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

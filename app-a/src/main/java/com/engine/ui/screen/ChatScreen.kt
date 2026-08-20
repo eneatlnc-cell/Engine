@@ -265,9 +265,9 @@ fun ChatScreen(
                     .padding(horizontal = 24.dp)
                     .padding(bottom = 32.dp)
             ) {
-                // 消息预览 (最多两行, 交代操作对象)
+                // 消息预览 (最多两行, 交代操作对象; v3.21: 贴纸渲染为友好预览)
                 Text(
-                    text = target.text,
+                    text = com.engine.data.StickerCatalog.previewOf(target.text),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
