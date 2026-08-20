@@ -12,9 +12,9 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.22: FAB 重影回归修复 + 空态统一呼吸大图 + 夜间对比度 + DID 档案页
-        versionCode = 9
-        versionName = "3.22.0"
+        // v3.22.1: FAB 重影根修 —— BottomCenter→BottomEnd, 消除展开/收起时主钮 ~44dp 布局瞬移
+        versionCode = 10
+        versionName = "3.22.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -313,7 +313,14 @@ fun ChatListScreen(
                     animationSpec = tween(120)
                 ) + fadeOut(tween(120))
             ) {
-                Box(contentAlignment = Alignment.BottomCenter) {
+                // v3.22.1 重影根修: BottomCenter → BottomEnd。
+                // 真因 (弹簧/投影均不是): 药丸经 AnimatedVisibility 出入,
+                // scaleIn/Out 只动画绘制层, 布局尺寸在可见首帧即全量占位 ——
+                // Box 宽度 56dp→~144dp 瞬间跳变, BottomCenter 令主 FAB
+                // 随之水平瞬移 ~44dp (展开左跳 / 收起在药丸淡出后才右弹),
+                // 肉眼即 "重影"。锚定 BottomEnd 后 FAB 屏幕位置与药丸
+                // 布局尺寸彻底解耦, 恒定不动; 药丸仍右对齐于 FAB 正上方。
+                Box(contentAlignment = Alignment.BottomEnd) {
                     // v3.12: 展开列垫高到主 FAB 上方 (bottom = FAB 56dp + 16dp 间隙)。
                     //   v3.11 病灶: Column 与主 FAB 同底边对齐, 展开后 Column
                     //   底部 56dp 直接压在 FAB 圆面上 —— 视频确认的 "重叠展示"。
@@ -343,8 +350,8 @@ fun ChatListScreen(
                         )
                     }
                     // 主 FAB: 展开时图标旋转 45° (+→✕)
-                    // v3.22: MediumBouncy→LowBouncy —— 旋转过冲 45°+ 在白天
-                    // 亮底上肉眼可见 "转过头再弹回", v3.10 重影同病灶回归
+                    // LowBouncy 轻过冲纯打磨项; v3.22.1 确认重影真因
+                    // 是父级 Box 的 BottomCenter 布局瞬移, 与弹簧无关
                     val fabRotate by animateFloatAsState(
                         targetValue = if (fabExpanded) 45f else 0f,
                         animationSpec = spring(
@@ -625,9 +632,8 @@ private fun FabAction(
         visible = visible,
         enter = scaleIn(
             initialScale = 0.4f,
-            // v3.22: MediumBouncy→LowBouncy —— v3.11 重构引入的回归:
-            // 过冲 >1.0 的帧, 药丸描边与底色在白天亮背景上呈现
-            // "两个同心圆" (v3.10 主 FAB 同病灶, 见 deafd8e)
+            // LowBouncy 去过冲拖影 (打磨项)。重影真因在父级 Box 对齐方式
+            // (v3.22.1 已根修), 弹簧参数对重影无贡献
             animationSpec = spring(
                 dampingRatio = Spring.DampingRatioLowBouncy,
                 stiffness = Spring.StiffnessMedium,
