@@ -108,10 +108,17 @@ fun ChatScreen(
                 TopAppBar(
                     title = {
                         if (groupInfo != null) {
-                            Column {
+                            // v3.19: 群标题点击 → 群详情 (成员/门禁/审批/邀请码)
+                            Column(
+                                modifier = Modifier.clip(RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        navController.navigate("groupDetail/${groupInfo.id}")
+                                    }
+                                    .padding(horizontal = 4.dp, vertical = 2.dp)
+                            ) {
                                 Text(groupInfo.name, fontWeight = FontWeight.SemiBold)
                                 Text(
-                                    text = "${groupInfo.members.size} 名成员",
+                                    text = "${groupInfo.members.size} 名成员 ›",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

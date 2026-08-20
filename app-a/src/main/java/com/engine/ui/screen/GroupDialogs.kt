@@ -270,7 +270,9 @@ fun JoinGroupDialog(
 
                 when {
                     !submitted -> Text(
-                        "向群主在线时申请, 自动通过。",
+                        // v3.19: 门禁语义兼容 —— 群主可选自动通过或人工审批,
+                        // 申请者无法远程得知模式, 文案覆盖两种可能
+                        "群主在线时处理申请: 自动通过或待其审批。\n审批通过后群聊自动出现在列表中。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

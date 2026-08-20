@@ -16,6 +16,32 @@ data class GroupMember(
 )
 
 /**
+ * 群门禁模式 (v3.19, P2)
+ *
+ * 仅群主本地生效 (门禁在群主侧执行): 群纯内存态, 模式随群主内存存续,
+ * 不入协议帧 —— JOIN_REQ 的处理方式完全由收到它的群主决定。
+ */
+object GroupGateMode {
+    /** 自动通过: 群主在线即批准 (v3.14 起的默认行为) */
+    const val AUTO = "AUTO"
+
+    /** 群主审批: 申请进入待审队列, 群主逐条同意/拒绝 */
+    const val APPROVAL = "APPROVAL"
+}
+
+/**
+ * 入群申请 (v3.19, 群主侧待审队列条目)
+ *
+ * 纯内存; 申请者重发 JOIN_REQ 按 (groupId, fp) 去重 (刷新时间戳)。
+ */
+data class JoinRequest(
+    val groupId: String,
+    val fp: String,
+    val nickname: String,
+    val requestedAt: Long
+)
+
+/**
  * 群组 (v3.14) — 纯内存, 关闭即消散
  *
  * 生命周期 (v3.14.1):
@@ -37,7 +63,8 @@ data class EngineGroup(
     val inviteConfirmed: Boolean,     // 群主侧: 中继登记已确认
     val createdAt: Long,
     val lastMessage: String? = null,  // 聊天列表预览
-    val lastMessageTime: Long? = null
+    val lastMessageTime: Long? = null,
+    val gateMode: String = GroupGateMode.AUTO  // v3.19: 门禁 (仅群主本地语义)
 ) {
     val isOwner: Boolean get() = myRole == com.securesocial.core.protocol.GroupRoles.OWNER
 
@@ -121,6 +148,12 @@ class GroupStore {
     @Synchronized
     fun setInviteConfirmed(groupId: String, confirmed: Boolean) {
         mutate(groupId) { copy(inviteConfirmed = confirmed) }
+    }
+
+    /** v3.19: 群主切换门禁模式 */
+    @Synchronized
+    fun setGateMode(groupId: String, mode: String) {
+        mutate(groupId) { copy(gateMode = mode) }
     }
 
     /** 成员变更 (入群/退群) 后同步成员表 */

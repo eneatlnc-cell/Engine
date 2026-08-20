@@ -33,12 +33,43 @@ import com.engine.data.BoundIdentityStore
 import com.engine.ui.components.EngineBackground
 import com.engine.ui.screen.ChatListScreen
 import com.engine.ui.screen.ChatScreen
+import com.engine.ui.screen.GroupDetailScreen
 import com.engine.ui.screen.GroupsScreen
 import com.engine.ui.screen.LoginScreen
 import com.engine.ui.screen.MarksScreen
 import com.engine.ui.theme.EngineTheme
 import com.engine.viewmodel.LoginUiState
 import com.engine.viewmodel.LoginViewModel
+
+/**
+ * v3.19: 入群结论全局对话框 (满员 / 群主拒绝)
+ *
+ * JOIN_RESP 拒绝在申请发出数秒后到达, 入群对话框早已关闭 ——
+ * 经 EngineApp.joinFeedback 全局呈现, 任意页面均可见。
+ */
+@Composable
+private fun JoinFeedbackDialog(app: EngineApp) {
+    val feedback by app.joinFeedback.collectAsState()
+    feedback?.let { fb ->
+        AlertDialog(
+            onDismissRequest = { app.joinFeedback.value = null },
+            icon = {
+                Icon(
+                    imageVector = Icons.Filled.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error
+                )
+            },
+            title = { Text("无法入群") },
+            text = { Text(fb.message) },
+            confirmButton = {
+                TextButton(onClick = { app.joinFeedback.value = null }) {
+                    Text("知道了")
+                }
+            }
+        )
+    }
+}
 
 /**
  * 主 Activity
@@ -113,7 +144,29 @@ class MainActivity : ComponentActivity() {
                             composable("groups") {
                                 GroupsScreen(navController = navController)
                             }
+
+                            // v3.19: 群详情 (群聊顶栏 / 群组管理卡片 → 成员列表/门禁/审批/邀请码)
+                            composable(
+                                route = "groupDetail/{groupId}",
+                                arguments = listOf(
+                                    navArgument("groupId") {
+                                        type = NavType.StringType
+                                    }
+                                )
+                            ) { backStackEntry ->
+                                val groupId =
+                                    backStackEntry.arguments?.getString("groupId") ?: ""
+
+                                GroupDetailScreen(
+                                    navController = navController,
+                                    groupId = groupId
+                                )
+                            }
                         }
+
+                        // v3.19: 入群结论全局对话框 (拒绝反馈异步到达,
+                        // 此时入群对话框多已关闭, 需全局呈现)
+                        JoinFeedbackDialog(app)
                     }
                 }
             }

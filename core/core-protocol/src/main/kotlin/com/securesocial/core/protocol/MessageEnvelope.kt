@@ -224,6 +224,7 @@ object GroupErrorCodes {
     const val RATE_LIMITED = "RATE_LIMITED"       // 查询限流 (防枚举)
     const val UNAUTHORIZED = "UNAUTHORIZED"       // 非群主操作他人映射
     const val GROUP_FULL = "GROUP_FULL"           // v3.17.1: 群成员已达上限 (200)
+    const val JOIN_REJECTED = "JOIN_REJECTED"     // v3.19: 群主审批拒绝 (门禁模式)
 }
 
 /**

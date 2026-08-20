@@ -119,6 +119,32 @@ class EngineApp : Application() {
     /** v3.14: 邀请码查询结果 (入群对话框消费; null = 无待处理结果) */
     val roomLookupResult = MutableStateFlow<com.securesocial.core.protocol.RoomInfoPayload?>(null)
 
+    // ---- v3.19: 入群审批 (P1 UI + P2 门禁) ----
+
+    /**
+     * 入群异步反馈 (申请者侧; JOIN_RESP 拒绝 / 群已满)
+     *
+     * 申请在 JOIN_REQ 发出后异步到达结论, 此时入群对话框多已关闭,
+     * 反馈经全局对话框呈现 (MainActivity 挂载), 读取后置 null 消费。
+     */
+    data class JoinFeedback(
+        val code: String,      // GroupErrorCodes.GROUP_FULL / JOIN_REJECTED / ...
+        val message: String,   // 用户可读文案
+        val groupName: String?, // 群名 (拒绝信令不携名, 仅为 UI 预留)
+        val at: Long
+    )
+
+    /** 申请者侧入群结论 (null = 无待展示反馈) */
+    val joinFeedback = MutableStateFlow<JoinFeedback?>(null)
+
+    /**
+     * 待审入群申请 (群主侧; APPROVAL 门禁模式下入队)
+     *
+     * 纯内存; (groupId, fp) 去重, TTL 10 分钟, 上限 100 条,
+     * 随群解散/退群/进程终止消散。
+     */
+    val pendingJoinRequests = MutableStateFlow<List<com.engine.data.JoinRequest>>(emptyList())
+
     /** v3.14: 当前待入群的邀请码 (用于匹配 ROOM_INFO 回执) */
     @Volatile
     private var pendingJoinCode: String? = null
@@ -300,6 +326,12 @@ class EngineApp : Application() {
 
         /** v3.14.1: 成员失联判定窗口 (3 个心跳周期无信号 = 失联) */
         private const val MEMBER_TIMEOUT_MS = 90_000L
+
+        /** v3.19: 待审入群申请有效期 (群主未处理超时自动出队) */
+        private const val JOIN_REQUEST_TTL_MS = 10 * 60_000L
+
+        /** v3.19: 待审队列全局上限 (防内存膨胀; 超出丢弃最旧申请) */
+        private const val MAX_PENDING_JOIN_REQUESTS = 100
 
         /**
          * 中继服务器地址 (v2: 经 BuildConfig 配置, 支持生产 VPS wss:// 地址)
@@ -1099,7 +1131,7 @@ class EngineApp : Application() {
                 }
             }
 
-            // 群主侧: 入群申请 (凭邀请码匹配群, v3.14 自动批准)
+            // 群主侧: 入群申请 (凭邀请码匹配群; v3.14 自动批准 → v3.19 按门禁分流)
             A.JOIN_REQ -> {
                 val code = ctrl.code ?: return
                 val group = groupStore.findByInviteCode(code) ?: return
@@ -1119,22 +1151,14 @@ class EngineApp : Application() {
                     return
                 }
 
-                val nickname = contactStore.getContact(source)?.nickname
-                    ?: ctrl.requesterFp?.let { "用户 ${it.take(8)}" }
-                    ?: "用户 ${source.take(8)}"
-                val updated = group.members +
-                        com.engine.data.GroupMember(source, nickname, com.securesocial.core.protocol.GroupRoles.MEMBER)
-                groupStore.setMembers(group.id, updated)
+                // v3.19 (P2 门禁): 审批模式 → 入待审队列, 群主在群详情页逐条处理;
+                // AUTO 模式维持 v3.14 起的在线即批
+                if (group.gateMode == com.engine.data.GroupGateMode.APPROVAL) {
+                    enqueueJoinRequest(group, source)
+                    return
+                }
 
-                // 新成员: 全量 KEY; 既有成员: ROSTER
-                val fresh = groupStore.getGroup(group.id) ?: return
-                seedPresence(group.id, listOf(source) + fresh.members.map { it.fp })
-                sendGroupCtrlTo(source, keyCtrlFor(fresh))
-                val rosterCtrl = ctrlFor(fresh, A.ROSTER)
-                fresh.members.map { it.fp }
-                    .filter { it != myFp && it != source }
-                    .forEach { sendGroupCtrlTo(it, rosterCtrl) }
-                Log.i(TAG, "Group ${group.id.take(8)}... member joined: ${source.take(8)}...")
+                admitJoin(group, source)
             }
 
             // 群主侧: 成员退群 → 轮换密钥
@@ -1166,6 +1190,7 @@ class EngineApp : Application() {
                 if (group.ownerFp == source) {
                     groupStore.remove(gid)
                     messageStore.clearSession(com.engine.data.EngineGroup.conversationKey(gid))
+                    pendingJoinRequests.value = pendingJoinRequests.value.filterNot { it.groupId == gid }
                     Log.i(TAG, "Group $gid dissolved by owner")
                 }
             }
@@ -1177,13 +1202,26 @@ class EngineApp : Application() {
                     if (it.ownerFp == source && !it.isOwner) {
                         groupStore.remove(gid)
                         messageStore.clearSession(com.engine.data.EngineGroup.conversationKey(gid))
+                        pendingJoinRequests.value = pendingJoinRequests.value.filterNot { it.groupId == gid }
                     }
                 }
             }
 
-            // 成员侧: 入群被拒 (v3.14 自动批准, 此路径预留)
+            // 成员侧: 入群结论 (v3.19 起拒绝路径真实可达)
+            // approved=true 不发送 (KEY 分发到达即成功);
+            // approved=false: 满员 (v3.17.1) 或群主审批拒绝 (v3.19) → 全局反馈
             A.JOIN_RESP -> {
-                Log.i(TAG, "Join rejected: ${ctrl.reason}")
+                if (!ctrl.approved) {
+                    val reason = ctrl.reason
+                        ?: com.securesocial.core.protocol.GroupErrorCodes.JOIN_REJECTED
+                    val message = when (reason) {
+                        com.securesocial.core.protocol.GroupErrorCodes.GROUP_FULL ->
+                            "群已满员 (${com.securesocial.core.protocol.GroupLimits.MAX_MEMBERS} 人上限), 无法加入"
+                        else -> "入群申请被群主拒绝"
+                    }
+                    Log.i(TAG, "Join rejected: $reason")
+                    joinFeedback.value = JoinFeedback(reason, message, null, System.currentTimeMillis())
+                }
             }
         }
     }
@@ -1402,6 +1440,7 @@ class EngineApp : Application() {
 
         presenceTickCount++
         prunePendingFanout()
+        pruneJoinRequests()  // v3.19: 待审申请 TTL 过期出队
 
         for (group in groupStore.groups.value.toList()) {
             if (group.groupKey == null) continue
@@ -1544,6 +1583,7 @@ class EngineApp : Application() {
         )
         groupStore.remove(groupId)
         messageStore.clearSession(com.engine.data.EngineGroup.conversationKey(groupId))
+        pendingJoinRequests.value = pendingJoinRequests.value.filterNot { it.groupId == groupId }
     }
 
     /** 解散群组 (仅群主): 通知全员后移除 */
@@ -1562,6 +1602,138 @@ class EngineApp : Application() {
             .forEach { sendGroupCtrlTo(it, ctrl) }
         groupStore.remove(groupId)
         messageStore.clearSession(com.engine.data.EngineGroup.conversationKey(groupId))
+        pendingJoinRequests.value = pendingJoinRequests.value.filterNot { it.groupId == groupId }
+    }
+
+    // ==================== v3.19: 入群审批编排 (P1 UI + P2 门禁) ====================
+
+    /**
+     * 准入成员 (自动批准与人工审批共用): 加花名册 → 新成员 KEY / 既有成员 ROSTER
+     *
+     * 调用方保证: 我是群主, 申请者不在册, 未满员。
+     */
+    private fun admitJoin(group: com.engine.data.EngineGroup, applicantFp: String) {
+        val myFp = sessionManager.identityFingerprint ?: return
+        val nickname = contactStore.getContact(applicantFp)?.nickname
+            ?: "用户 ${applicantFp.take(8)}"
+        val updated = group.members +
+                com.engine.data.GroupMember(applicantFp, nickname, com.securesocial.core.protocol.GroupRoles.MEMBER)
+        groupStore.setMembers(group.id, updated)
+
+        // 新成员: 全量 KEY; 既有成员: ROSTER
+        val fresh = groupStore.getGroup(group.id) ?: return
+        seedPresence(group.id, listOf(applicantFp) + fresh.members.map { it.fp })
+        sendGroupCtrlTo(applicantFp, keyCtrlFor(fresh))
+        val rosterCtrl = ctrlFor(fresh, com.securesocial.core.protocol.GroupCtrlActions.ROSTER)
+        fresh.members.map { it.fp }
+            .filter { it != myFp && it != applicantFp }
+            .forEach { sendGroupCtrlTo(it, rosterCtrl) }
+        Log.i(TAG, "Group ${group.id.take(8)}... member joined: ${applicantFp.take(8)}...")
+    }
+
+    /** 待审申请入队 ((groupId, fp) 去重刷新时间戳; 全局上限丢弃最旧) */
+    private fun enqueueJoinRequest(group: com.engine.data.EngineGroup, applicantFp: String) {
+        val nickname = contactStore.getContact(applicantFp)?.nickname
+            ?: "用户 ${applicantFp.take(8)}"
+        val now = System.currentTimeMillis()
+        val current = pendingJoinRequests.value
+            .filterNot { it.groupId == group.id && it.fp == applicantFp }
+            .toMutableList()
+        current.add(com.engine.data.JoinRequest(group.id, applicantFp, nickname, now))
+        // 上限: 按申请时间排序, 保留最新的 MAX_PENDING_JOIN_REQUESTS 条
+        val trimmed = current.sortedByDescending { it.requestedAt }
+            .take(MAX_PENDING_JOIN_REQUESTS)
+        pendingJoinRequests.value = trimmed
+        Log.i(TAG, "Group ${group.id.take(8)}... join queued for approval: ${applicantFp.take(8)}...")
+    }
+
+    /** 待审队列过期清理 (心跳拍顺带) */
+    private fun pruneJoinRequests() {
+        val now = System.currentTimeMillis()
+        val fresh = pendingJoinRequests.value.filter { it.requestedAt >= now - JOIN_REQUEST_TTL_MS }
+        if (fresh.size != pendingJoinRequests.value.size) {
+            pendingJoinRequests.value = fresh
+        }
+    }
+
+    /**
+     * 群主: 同意待审申请 (群详情页审批卡调用)
+     *
+     * 满员竞态防护: 排队期间群可能已满 → 转 GROUP_FULL 拒绝 (不再批准)。
+     */
+    fun approveJoinRequest(groupId: String, applicantFp: String) {
+        val group = groupStore.getGroup(groupId) ?: run {
+            pendingJoinRequests.value = pendingJoinRequests.value
+                .filterNot { it.groupId == groupId }
+            return
+        }
+        if (!group.isOwner) return
+        pendingJoinRequests.value = pendingJoinRequests.value
+            .filterNot { it.groupId == groupId && it.fp == applicantFp }
+
+        if (group.members.any { it.fp == applicantFp }) return  // 已在册 (重复申请残留)
+        if (group.members.size >= com.securesocial.core.protocol.GroupLimits.MAX_MEMBERS) {
+            // 排队期间已满: 转满员拒绝, 防超限准入
+            sendGroupCtrlTo(applicantFp, com.securesocial.core.protocol.GroupCtrlPayload(
+                action = com.securesocial.core.protocol.GroupCtrlActions.JOIN_RESP,
+                groupId = groupId,
+                approved = false,
+                reason = com.securesocial.core.protocol.GroupErrorCodes.GROUP_FULL
+            ))
+            return
+        }
+        admitJoin(group, applicantFp)
+    }
+
+    /** 群主: 拒绝待审申请 (JOIN_RESP approved=false) */
+    fun rejectJoinRequest(groupId: String, applicantFp: String) {
+        val group = groupStore.getGroup(groupId) ?: run {
+            pendingJoinRequests.value = pendingJoinRequests.value
+                .filterNot { it.groupId == groupId }
+            return
+        }
+        if (!group.isOwner) return
+        pendingJoinRequests.value = pendingJoinRequests.value
+            .filterNot { it.groupId == groupId && it.fp == applicantFp }
+        sendGroupCtrlTo(applicantFp, com.securesocial.core.protocol.GroupCtrlPayload(
+            action = com.securesocial.core.protocol.GroupCtrlActions.JOIN_RESP,
+            groupId = groupId,
+            approved = false,
+            reason = com.securesocial.core.protocol.GroupErrorCodes.JOIN_REJECTED
+        ))
+        Log.i(TAG, "Group ${groupId.take(8)}... join rejected by owner: ${applicantFp.take(8)}...")
+    }
+
+    /** 群主: 切换门禁 (AUTO 在线即批 / APPROVAL 人工审批) */
+    fun setGroupGate(groupId: String, mode: String) {
+        val group = groupStore.getGroup(groupId) ?: return
+        if (!group.isOwner) return
+        if (mode != com.engine.data.GroupGateMode.AUTO &&
+            mode != com.engine.data.GroupGateMode.APPROVAL
+        ) return
+        groupStore.setGateMode(groupId, mode)
+        // 切回 AUTO: 清空该群积压待审 (在线即批语义下队列无意义, 申请者需重发)
+        if (mode == com.engine.data.GroupGateMode.AUTO) {
+            pendingJoinRequests.value = pendingJoinRequests.value
+                .filterNot { it.groupId == groupId }
+        }
+    }
+
+    /** 群主: 更换邀请码 (旧码换新 + 重新登记; 旧映射 24h 过期自然失效) */
+    fun refreshInviteCode(groupId: String) {
+        val group = groupStore.getGroup(groupId) ?: return
+        if (!group.isOwner) return
+        val newCode = com.securesocial.core.protocol.InviteCode.generate()
+        groupStore.updateInviteCode(groupId, newCode, confirmed = false)
+        inviteRetryCount.remove(groupId)
+        relayManager.sendRoomRegister(newCode)
+        Log.i(TAG, "Group ${groupId.take(8)}... invite code refreshed")
+    }
+
+    /** 成员在线判定 (UI 在场圆点; 心跳窗口内 = 在线) */
+    fun isMemberOnline(groupId: String, fp: String): Boolean {
+        val seen = presenceSeen[groupId]?.get(fp) ?: return false
+        return seen > System.currentTimeMillis() - MEMBER_TIMEOUT_MS
     }
 
     /**

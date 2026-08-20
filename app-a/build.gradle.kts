@@ -12,9 +12,10 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.18.1: 定向增量审计修复 (订阅幂等/控制帧分账限流/空群回收/限流消息状态)
-        versionCode = 5
-        versionName = "3.18.1"
+        // v3.19: 群详情页 (成员列表/在线状态) + P2 门禁审批 (AUTO/APPROVAL) +
+        // 邀请码刷新 + 入群拒绝反馈 (GROUP_FULL/JOIN_REJECTED)
+        versionCode = 6
+        versionName = "3.19.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

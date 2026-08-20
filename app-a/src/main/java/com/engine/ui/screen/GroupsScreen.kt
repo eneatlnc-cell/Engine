@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.HowToReg
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -154,6 +155,9 @@ fun GroupsScreen(
                         onOpen = {
                             navController.navigate("chat/${EngineGroup.conversationKey(group.id)}")
                         },
+                        onDetail = {
+                            navController.navigate("groupDetail/${group.id}")
+                        },
                         onCopyCode = { code -> clipboard.setText(AnnotatedString(code)) },
                         onDanger = { confirmAction = group }
                     )
@@ -206,9 +210,14 @@ fun GroupsScreen(
 private fun GroupCard(
     group: EngineGroup,
     onOpen: () -> Unit,
+    onDetail: () -> Unit,
     onCopyCode: (String) -> Unit,
     onDanger: () -> Unit
 ) {
+    val app = EngineApp.get()
+    val pendingRequests by app.pendingJoinRequests.collectAsState()
+    val myPending = pendingRequests.count { it.groupId == group.id }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -221,13 +230,29 @@ private fun GroupCard(
             GradientAvatar(seed = group.id, label = group.name, size = 40.dp)
             Spacer(Modifier.size(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    group.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        group.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    // v3.19: 待审角标 (审批门禁下有新申请)
+                    if (group.isOwner && myPending > 0) {
+                        Spacer(Modifier.size(6.dp))
+                        Text(
+                            "$myPending 待审",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onError,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(MaterialTheme.colorScheme.error)
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
                 Text(
                     text = buildString {
                         append("${group.members.size} 名成员 · ")
@@ -241,6 +266,14 @@ private fun GroupCard(
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            // v3.19: 群详情 (成员/门禁/审批/邀请码)
+            IconButton(onClick = onDetail) {
+                Icon(
+                    Icons.Default.Settings,
+                    contentDescription = "群详情",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             IconButton(onClick = onDanger) {
