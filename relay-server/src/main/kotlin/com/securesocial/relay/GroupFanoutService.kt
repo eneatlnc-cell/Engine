@@ -28,6 +28,17 @@ import java.util.concurrent.atomic.AtomicInteger
  * - 群级字节桶: 16MB 突发 / 2MB/s 持续 —— 单条满额贴纸扇出 (≈15.6MB)
  *   可整帧放行 (瞬时 ~1.25s 满管), 连续大贴纸被迫降速
  * - 全局字节桶: 32MB 突发 / 8MB/s 持续 —— 防多个大群饿死 1:1 流量
+ *
+ * v3.18.1 审计修复 (定向增量审计 2026-08-20):
+ * - 订阅幂等修复: 原实现对同一 (会话, 群) 重复订阅会重复累加计数器
+ *   (KEY 轮换/重发即触发), 64 群上限被虚耗提前触顶。现以会话级
+ *   gid 集合为准, 重复订阅为无副作用幂等操作。
+ * - 索引化断连除名: 原实现每次断连全表扫描 subscribers (O(所有群));
+ *   现经会话索引直取本会话订阅的群, O(本会话群数)。
+ * - 空群回收: 订阅集清空时同步移除订阅集与群级令牌桶 (原桶永不
+ *   回收, 群解散后条目永久驻留 = 缓慢内存泄漏)。
+ * - 扇出投递改每端独立协程: 原单协程顺序 send, 一个慢消费端
+ *   (outgoing 缓冲满则挂起) 会拖住同群其余全部接收端的投递。
  */
 class GroupFanoutService {
 
@@ -39,10 +50,15 @@ class GroupFanoutService {
     /** groupId → 订阅会话集 (会话断开由 unsubscribeAll 除名) */
     private val subscribers = ConcurrentHashMap<String, MutableSet<DefaultWebSocketServerSession>>()
 
-    /** 会话 → 订阅计数 (单连接订阅数护栏) */
-    private val sessionCounts = ConcurrentHashMap<DefaultWebSocketServerSession, AtomicInteger>()
+    /**
+     * 会话 → 已订阅群集合 (订阅幂等与断连索引的真值源)
+     *
+     * 计数即集合大小, 不再单独维护计数器 —— 杜绝 "重复订阅虚增计数"
+     * 的不一致窗口 (审计 R1)。
+     */
+    private val sessionSubscriptions = ConcurrentHashMap<DefaultWebSocketServerSession, MutableSet<String>>()
 
-    /** groupId → 群级令牌桶 */
+    /** groupId → 群级令牌桶 (订阅集清空时回收, 见 unsubscribeAll) */
     private val buckets = ConcurrentHashMap<String, GroupBucket>()
 
     /** 全局字节令牌桶 */
@@ -51,31 +67,61 @@ class GroupFanoutService {
         refillPerSecond = ProtocolConstants.GLOBAL_FANOUT_BYTES_PER_SECOND
     )
 
+    /** 群订阅总数 (观测用) */
+    fun subscriptionCount(): Int = subscribers.size
+
     /** 扇出准入结果 */
     enum class Admission { OK, NO_SUBSCRIBERS, GROUP_RATE_LIMITED, GLOBAL_LIMIT }
 
     /**
-     * 订阅群 (幂等; GROUP_SUBSCRIBE 帧)
+     * 订阅群 (GROUP_SUBSCRIBE 帧; 幂等)
+     *
+     * 重复订阅同一群为无副作用操作 (KEY 轮换/补发/入群重试会多次发送);
+     * 以 sessionSubscriptions 为准, 计数天然一致。
      *
      * @return false = 该连接订阅群数已达上限 (MAX_GROUP_SUBSCRIPTIONS_PER_CONNECTION)
      */
     fun subscribe(groupId: String, session: DefaultWebSocketServerSession): Boolean {
-        val count = sessionCounts.computeIfAbsent(session) { AtomicInteger(0) }
-        while (true) {
-            val current = count.get()
-            if (current >= ProtocolConstants.MAX_GROUP_SUBSCRIPTIONS_PER_CONNECTION) return false
-            if (count.compareAndSet(current, current + 1)) break
+        val gids = sessionSubscriptions.computeIfAbsent(session) { ConcurrentHashMap.newKeySet() }
+        // 会话级互斥: gids 集合的 "查限-加入" 与计数一致 (同一会话的订阅帧
+        // 来自同一条连接读取循环, 天然串行; 锁仅防御非常规并发调用)
+        synchronized(gids) {
+            if (!gids.add(groupId)) return true  // 已订阅: 幂等无副作用
+            if (gids.size > ProtocolConstants.MAX_GROUP_SUBSCRIPTIONS_PER_CONNECTION) {
+                gids.remove(groupId)
+                return false
+            }
         }
-        subscribers.computeIfAbsent(groupId) { ConcurrentHashMap.newKeySet() }.add(session)
+        // compute 原子挂载: 与 unsubscribeAll 的 computeIfPresent 同键互斥,
+        // 不存在 "挂到已被回收的集" 的窗口
+        subscribers.compute(groupId) { _, set ->
+            val s = set ?: ConcurrentHashMap.newKeySet()
+            s.add(session)
+            s
+        }
         return true
     }
 
     /**
-     * 会话断开: 移除其全部订阅 (含订阅计数), 并回收空订阅集与闲置令牌桶
+     * 会话断开: 移除其全部订阅, 并回收空订阅集与群级令牌桶
+     *
+     * 经会话索引直取 (O(本会话群数)), 不再全表扫描;
+     * subscribers.computeIfPresent 与 subscribe 的 compute 同键原子,
+     * 并发订阅/退订不会互相孤儿化。
      */
     fun unsubscribeAll(session: DefaultWebSocketServerSession) {
-        sessionCounts.remove(session)
-        subscribers.values.removeAll { set -> set.remove(session) && set.isEmpty() }
+        val gids = sessionSubscriptions.remove(session) ?: return
+        for (gid in gids) {
+            subscribers.computeIfPresent(gid) { _, set ->
+                set.remove(session)
+                if (set.isEmpty()) {
+                    // 末位离场: 回收订阅集与群级令牌桶 (桶随空闲群重建,
+                    // 速率预算重置无正确性影响 —— 空群本无扇出流量)
+                    buckets.remove(gid)
+                    null
+                } else set
+            }
+        }
     }
 
     /**
@@ -115,9 +161,11 @@ class GroupFanoutService {
             return Admission.GROUP_RATE_LIMITED
         }
 
-        // 异步投递: 大群扇出 (200 端) 若同步执行会阻塞发送方读取循环数秒
-        fanoutScope.launch {
-            for (target in recipients) {
+        // 异步投递, 每端独立协程: 大群扇出 (200 端) 若同步执行会阻塞发送方
+        // 读取循环数秒; 单协程顺序 send 则一个慢消费端 (outgoing 满则挂起)
+        // 会拖住同群其余全部接收端 (审计 R5) —— 独立协程隔离各端背压
+        for (target in recipients) {
+            fanoutScope.launch {
                 try {
                     target.send(Frame.Text(frameText))
                 } catch (e: Exception) {

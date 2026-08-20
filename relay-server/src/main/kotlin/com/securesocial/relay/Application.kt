@@ -115,8 +115,15 @@ fun Application.configureRouting() {
                 logger.info("Node authenticated & registered: ${node.fingerprint.take(8)}... (${registry.onlineCount()} online)")
 
                 // 步骤 3: 消息循环 (带速率限制)
+                // v3.18.1: 业务帧与控制帧分账限流 (审计 R2) ——
+                // GROUP_SUBSCRIBE / GROUP_FANOUT 按群计帧: 重连重订阅对每群
+                // 一帧、在场心跳每拍每群一帧, 多群用户 (上限 64 群) 瞬间突破
+                // 20 msg/s 业务预算即被断连 → 重订阅风暴 → 重连死循环。
+                // 控制帧单列预算 (128/s, 见 ProtocolConstants); 畸形/不可解帧
+                // 仍计入业务预算, 保持 v2 "任何帧洪水都被限流" 的防线不变。
                 var rateWindowStart = System.currentTimeMillis()
-                var rateWindowCount = 0
+                var bizFrameCount = 0
+                var ctlFrameCount = 0
 
                 for (frame in incoming) {
                     if (frame !is Frame.Text) continue
@@ -132,19 +139,29 @@ fun Application.configureRouting() {
                         break
                     }
 
-                    // v2: 简单滑动窗口速率限制
+                    // v2: 简单滑动窗口速率限制 (v3.18.1: 1s 窗口双预算)
+                    val envelope = ProtocolSerializer.decode(raw)
+                    val isControlFrame = envelope?.type == MessageType.GROUP_SUBSCRIBE ||
+                            envelope?.type == MessageType.GROUP_FANOUT
+
                     val now = System.currentTimeMillis()
                     if (now - rateWindowStart >= 1_000L) {
                         rateWindowStart = now
-                        rateWindowCount = 0
+                        bizFrameCount = 0
+                        ctlFrameCount = 0
                     }
-                    if (++rateWindowCount > ProtocolConstants.MAX_MSG_PER_SECOND) {
-                        logger.warn("Rate limit exceeded for ${node.fingerprint.take(8)}...")
+                    val overLimit = if (isControlFrame) {
+                        ++ctlFrameCount > ProtocolConstants.MAX_CONTROL_FRAMES_PER_SECOND
+                    } else {
+                        ++bizFrameCount > ProtocolConstants.MAX_MSG_PER_SECOND
+                    }
+                    if (overLimit) {
+                        logger.warn("Rate limit exceeded for ${node.fingerprint.take(8)}... (control=$ctlFrameCount biz=$bizFrameCount)")
                         close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Rate limit exceeded"))
                         break
                     }
 
-                    val envelope = ProtocolSerializer.decode(raw) ?: continue
+                    if (envelope == null) continue
 
                     // v2: 发送方身份强校验 —— 消息只能以自己的注册身份发出
                     // v3.14: GROUP_CTRL 与 MSG 同路径透传 (中继零群组状态)

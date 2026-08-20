@@ -12,9 +12,9 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.18: 群扇出架构 (GROUP_SUBSCRIBE 订阅 + 单帧上行 + 中继扇出 + 心跳扇出帧)
-        versionCode = 4
-        versionName = "3.18.0"
+        // v3.18.1: 定向增量审计修复 (订阅幂等/控制帧分账限流/空群回收/限流消息状态)
+        versionCode = 5
+        versionName = "3.18.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

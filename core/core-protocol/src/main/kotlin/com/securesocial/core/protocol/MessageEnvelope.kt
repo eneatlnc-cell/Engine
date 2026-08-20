@@ -370,6 +370,22 @@ object ProtocolConstants {
     const val MAX_GROUP_SUBSCRIPTIONS_PER_CONNECTION = 64
 
     /**
+     * v3.18.1: 单连接控制帧速率 (条/秒, 超限断开)。
+     *
+     * 适用帧型: GROUP_SUBSCRIBE / GROUP_FANOUT (与业务消息 20 msg/s 分账)。
+     *
+     * 审计 R2: 这两类帧按群计帧 —— 重连重订阅对每群一帧 GROUP_SUBSCRIBE,
+     * 在场心跳每拍对每群一帧 GROUP_FANOUT。若与 MSG 同账 20 msg/s,
+     * 21+ 群用户重连即被断连 (重订阅风暴 → 断连 → 重连死循环),
+     * 且每 30s 心跳拍整拍被杀 —— v3.18 根治的 "限流误杀" 在多群维度回归。
+     *
+     * 预算 128 = 64 群重订阅 + 64 群同拍心跳的峰值; 有界性:
+     * GROUP_SUBSCRIBE 受 64 群订阅上限硬约束 (幂等重复无副作用),
+     * GROUP_FANOUT 受群级 10 msg/s 令牌桶约束 (超限仅丢帧不投递)。
+     */
+    const val MAX_CONTROL_FRAMES_PER_SECOND = 128
+
+    /**
      * 群级扇出令牌桶: 消息速率上限 (条/秒, 桶容量 = 速率, 即允许 1s 突发)。
      *
      * 200 人群聊天典型峰值 ~7 msg/s (人均 1 条/30s), 10 msg/s 覆盖活跃

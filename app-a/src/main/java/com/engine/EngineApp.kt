@@ -428,6 +428,12 @@ class EngineApp : Application() {
                 if (code == com.securesocial.core.protocol.ErrorCodes.GROUP_NO_SUBSCRIBERS && target != null) {
                     failPendingFanoutMessages(target)
                 }
+                // v3.18.1: 扇出被令牌桶拒绝 (群级/全局限流, 审计 R6) →
+                // 该群最新一条待决消息标失败 (原实现忽略此错误, 被拒消息
+                // 永远停留在 SENT 状态, 用户以为已送达)
+                if (code == com.securesocial.core.protocol.ErrorCodes.GROUP_RATE_LIMITED && target != null) {
+                    failNewestPendingFanout(target)
+                }
             }
 
             // v3.14: 群消息/群控制/目录回执
@@ -950,6 +956,28 @@ class EngineApp : Application() {
     private fun prunePendingFanout() {
         val now = System.currentTimeMillis()
         pendingFanout.entries.removeIf { it.value.second < now - FANOUT_PENDING_TTL_MS }
+    }
+
+    /**
+     * v3.18.1: GROUP_RATE_LIMITED 到达 → 该群最新一条待决扇出消息标失败
+     *
+     * 令牌桶拒绝不回执具体帧 (错误信封仅携带 groupId)。突发连发场景下
+     * 令牌耗尽后新到帧被拒 —— 被拒的是后发的, 故按 LIFO 关联最新一条;
+     * 慢速逐条发送不触限, 此路径仅在快速连发时出现, 关联偏差至多一条。
+     */
+    private fun failNewestPendingFanout(groupId: String) {
+        var newestId: String? = null
+        var newestAt = 0L
+        for ((msgId, entry) in pendingFanout) {
+            if (entry.first != groupId) continue
+            if (newestId == null || entry.second > newestAt) {
+                newestId = msgId
+                newestAt = entry.second
+            }
+        }
+        val id = newestId ?: return
+        pendingFanout.remove(id)
+        messageStore.updateMessageStatus(id, MessageStatus.FAILED)
     }
 
     /**
