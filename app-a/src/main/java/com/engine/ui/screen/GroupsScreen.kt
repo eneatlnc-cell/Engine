@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.GroupAdd
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.HowToReg
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.QrCode2
@@ -51,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.engine.EngineApp
 import com.engine.data.EngineGroup
+import com.engine.ui.components.BreathingEmptyState
 import com.engine.ui.components.GradientAvatar
 import com.securesocial.core.protocol.GroupRoles
 
@@ -112,32 +114,18 @@ fun GroupsScreen(
         }
     ) { innerPadding ->
         if (groups.isEmpty()) {
+            // v3.22: 呼吸动画空态大图 (与聊天/联系人/标记物四页统一);
+            // 旧静态小图 + alpha 0.5/0.6 文字夜间对比度不足, 一并修复
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(innerPadding),
-                contentAlignment = Alignment.Center
+                    .padding(innerPadding)
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        imageVector = Icons.Default.QrCode2,
-                        contentDescription = null,
-                        modifier = Modifier.size(52.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                    )
-                    Spacer(Modifier.height(14.dp))
-                    Text(
-                        "还没有群组",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "右上角加入或新建 · 聊天页 + 也可建群",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                    )
-                }
+                BreathingEmptyState(
+                    icon = Icons.Filled.Groups,
+                    title = "还没有群组",
+                    subtitle = "右上角加入或新建 · 聊天页 + 也可建群"
+                )
             }
         } else {
             LazyColumn(
@@ -280,7 +268,8 @@ private fun GroupCard(
                 Icon(
                     imageVector = Icons.Default.Logout,
                     contentDescription = if (group.isOwner) "解散" else "退出",
-                    tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f)
+                    // v3.22: 去 alpha 叠加, 夜间全对比度 (同页 314 行修复)
+                    tint = MaterialTheme.colorScheme.error
                 )
             }
         }
@@ -323,7 +312,9 @@ private fun GroupCard(
         Text(
             text = group.members.joinToString(" / ") { it.nickname },
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            // v3.22: 去 alpha 0.7 叠加 —— 夜间 onSurfaceVariant×0.7
+            // 对比度不足, 用户实测 "看不清"
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )

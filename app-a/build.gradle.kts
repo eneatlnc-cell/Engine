@@ -12,9 +12,9 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.21: 标记物系统完善 (贴纸快照/搜索分类/导出)
-        versionCode = 8
-        versionName = "3.21.0"
+        // v3.22: FAB 重影回归修复 + 空态统一呼吸大图 + 夜间对比度 + DID 档案页
+        versionCode = 9
+        versionName = "3.22.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

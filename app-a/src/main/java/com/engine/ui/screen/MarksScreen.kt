@@ -57,6 +57,7 @@ import androidx.navigation.NavController
 import com.engine.EngineApp
 import com.engine.data.MarkerItem
 import com.engine.data.StickerCatalog
+import com.engine.ui.components.BreathingEmptyState
 import com.engine.ui.components.GradientAvatar
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -235,62 +236,31 @@ fun MarksScreen(
 
             // ---- 列表 / 空态 ----
             if (markers.isEmpty()) {
-                // 空态引导 (从未标记过)
+                // v3.22: 呼吸动画空态大图 (四页统一规格); 旧静态小图 +
+                // alpha 0.5/0.6 文字夜间对比度不足, 一并修复
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center
+                        .weight(1f)
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.BookmarkBorder,
-                            contentDescription = null,
-                            modifier = Modifier.size(56.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "暂无标记物",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "长按聊天中的消息即可标记收藏",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                        )
-                    }
+                    BreathingEmptyState(
+                        icon = Icons.Filled.BookmarkBorder,
+                        title = "暂无标记物",
+                        subtitle = "长按聊天中的消息即可标记收藏"
+                    )
                 }
             } else if (filtered.isEmpty()) {
                 // 有标记物但搜索/筛选无匹配
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center
+                        .weight(1f)
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.SearchOff,
-                            contentDescription = null,
-                            modifier = Modifier.size(48.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = "无匹配的标记物",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "换个关键词或切换分类试试",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                        )
-                    }
+                    BreathingEmptyState(
+                        icon = Icons.Filled.SearchOff,
+                        title = "无匹配的标记物",
+                        subtitle = "换个关键词或切换分类试试"
+                    )
                 }
             } else {
                 LazyColumn(
@@ -478,7 +448,8 @@ private fun MarkerCard(
             },
             style = MaterialTheme.typography.labelSmall,
             fontSize = 10.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            // v3.22: 去 alpha 0.7 叠加, 夜间全对比度
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }

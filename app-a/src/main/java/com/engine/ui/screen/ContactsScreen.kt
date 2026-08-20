@@ -52,7 +52,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -65,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engine.data.Contact
+import com.engine.ui.components.BreathingEmptyState
 import com.engine.ui.components.GradientAvatar
 import com.engine.viewmodel.ContactsViewModel
 import kotlinx.coroutines.launch
@@ -189,60 +189,24 @@ fun ContactsScreen(
 
 /**
  * 空状态: 暂无联系人
+ *
+ * v3.22: 动画主体迁移至共享组件 [BreathingEmptyState] —— 与聊天/群组/
+ * 标记物四页统一 "动态大图 + 呼吸副标题" 规格; 旧私有实现的动画代码删除。
  */
 @Composable
 private fun EmptyState(onAdd: () -> Unit) {
-    // 呼吸动画: 灵感来自 Telegram 空状态的吉祥物插图, 营造"鲜活"的 UI 感受
-    // 图标缩放 1.0 ↔ 1.1, 每段 1000ms + Reverse => 完整呼吸周期 2 秒
-    val infiniteTransition = rememberInfiniteTransition(label = "contactsBreathing")
-    val scale by infiniteTransition.animateFloat(
-        initialValue = 1.0f,
-        targetValue = 1.1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "iconScale"
-    )
-    // 副标题透明度呼吸: 0.5 ↔ 1.0, 与图标错相呼吸
-    val subtitleAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.5f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1500, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "subtitleAlpha"
-    )
-
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            imageVector = Icons.Filled.Person,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+    Box(modifier = Modifier.fillMaxSize()) {
+        BreathingEmptyState(
+            icon = Icons.Filled.Person,
+            title = "暂无联系人",
+            subtitle = "添加对方公钥指纹即可开始安全通讯"
+        )
+        Button(
+            onClick = onAdd,
             modifier = Modifier
-                .size(72.dp)
-                .graphicsLayer(scaleX = scale, scaleY = scale)
-        )
-        Spacer(modifier = Modifier.size(16.dp))
-        Text(
-            text = "暂无联系人",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.size(8.dp))
-        Text(
-            text = "添加对方公钥指纹即可开始安全通讯",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.graphicsLayer(alpha = subtitleAlpha)
-        )
-        Spacer(modifier = Modifier.size(24.dp))
-        Button(onClick = onAdd) {
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 48.dp)
+        ) {
             Icon(Icons.Filled.PersonAdd, contentDescription = null)
             Spacer(modifier = Modifier.size(8.dp))
             Text("添加联系人")

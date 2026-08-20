@@ -33,6 +33,7 @@ import com.engine.data.BoundIdentityStore
 import com.engine.ui.components.EngineBackground
 import com.engine.ui.screen.ChatListScreen
 import com.engine.ui.screen.ChatScreen
+import com.engine.ui.screen.DidScreen
 import com.engine.ui.screen.GroupDetailScreen
 import com.engine.ui.screen.GroupsScreen
 import com.engine.ui.screen.LoginScreen
@@ -133,6 +134,11 @@ class MainActivity : ComponentActivity() {
                                     navController = navController,
                                     peerFingerprint = peerFingerprint
                                 )
+                            }
+
+                            // v3.22: DID 身份页 (设置抽屉 → DID 身份; 头像/昵称管理)
+                            composable("did") {
+                                DidScreen(navController = navController)
                             }
 
                             // v3.16: 标记物列表 (设置抽屉 → 标记物)

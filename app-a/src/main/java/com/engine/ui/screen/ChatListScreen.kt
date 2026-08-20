@@ -79,6 +79,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -89,6 +90,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.engine.EngineApp
 import com.engine.data.BoundIdentityStore
+import com.engine.ui.components.BreathingEmptyState
 import com.engine.ui.components.ChatListItem
 import com.engine.ui.components.EngineNavBar
 import com.engine.ui.components.EngineSettingsDrawer
@@ -161,6 +163,12 @@ fun ChatListScreen(
         }
     }
 
+    // v3.22: 本机档案 (DID 页) —— 抽屉头部显示昵称 + 头像
+    val profile by app.profileStore.profile.collectAsState()
+    val drawerAvatar = remember(profile.avatarVersion) {
+        app.profileStore.decodeAvatar()?.asImageBitmap()
+    }
+
     // v3.8: 状态栏颜色与渐变顶端同色, 统一由 EngineSyncedTheme 管理
     // (原此处的 window.statusBarColor 手写块已删除, 避免双写跳变)
 
@@ -170,11 +178,15 @@ fun ChatListScreen(
         isDark = app.isDarkTheme,
         onToggleTheme = { app.toggleTheme() },
         fingerprint = boundFingerprint,
-        onOpenDid = { /* TODO(v3.12): DID 详情页 */ },
+        // v3.22: DID 身份页已落地 (头像设置 + 昵称修改)
+        onOpenDid = { navController.navigate("did") },
         // v3.14: 群组管理页已落地
         onOpenGroups = { navController.navigate("groups") },
         // v3.16: 标记物列表页已落地
         onOpenMarks = { navController.navigate("marks") },
+        // v3.22: 抽屉头部展示本机档案 (昵称 + 头像)
+        nickname = profile.nickname,
+        avatar = drawerAvatar,
     ) {
     Scaffold(
         // v3.8: 透明底 —— 让 EngineBackground 的全局渐变一路铺到屏幕顶
@@ -331,10 +343,12 @@ fun ChatListScreen(
                         )
                     }
                     // 主 FAB: 展开时图标旋转 45° (+→✕)
+                    // v3.22: MediumBouncy→LowBouncy —— 旋转过冲 45°+ 在白天
+                    // 亮底上肉眼可见 "转过头再弹回", v3.10 重影同病灶回归
                     val fabRotate by animateFloatAsState(
                         targetValue = if (fabExpanded) 45f else 0f,
                         animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            dampingRatio = Spring.DampingRatioLowBouncy,
                             stiffness = Spring.StiffnessMedium,
                         ),
                         label = "fabRotate",
@@ -611,8 +625,11 @@ private fun FabAction(
         visible = visible,
         enter = scaleIn(
             initialScale = 0.4f,
+            // v3.22: MediumBouncy→LowBouncy —— v3.11 重构引入的回归:
+            // 过冲 >1.0 的帧, 药丸描边与底色在白天亮背景上呈现
+            // "两个同心圆" (v3.10 主 FAB 同病灶, 见 deafd8e)
             animationSpec = spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
+                dampingRatio = Spring.DampingRatioLowBouncy,
                 stiffness = Spring.StiffnessMedium,
                 visibilityThreshold = 0.01f,
             ),
@@ -715,7 +732,11 @@ private fun ChatListContent(
         if (filteredList.isEmpty()) {
             if (searchQuery.isBlank()) {
                 // 空会话列表: 呼吸动画的帆船图标 (匹配 Engine 新 Logo)
-                EmptyChatListState()
+                BreathingEmptyState(
+                    icon = Icons.Filled.Sailing,
+                    title = "暂无会话, 请先添加联系人",
+                    subtitle = "开始你的安全通讯之旅"
+                )
             } else {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -749,50 +770,6 @@ private fun ChatListContent(
 }
 
 /**
- * 空会话列表状态: 呼吸动画的帆船图标 (匹配 Engine 新 Logo)
- *
- * 灵感来自 Telegram 截图: 空状态使用带动画的吉祥物插图, 营造"鲜活"的 UI 感受。
- * 将动画逻辑独立为 composable, 保证 remember 调用结构稳定, 避免在条件分支中调用。
+ * 空会话列表状态已迁移至共享组件 [BreathingEmptyState] (v3.22):
+ * 呼吸帆船 + 标题 + 副标题, 与联系人/群组/标记物四页统一规格。
  */
-@Composable
-private fun EmptyChatListState() {
-    // 呼吸动画: 图标缩放 1.0 ↔ 1.1, 每段 1000ms + Reverse => 完整呼吸周期 2 秒
-    val infiniteTransition = rememberInfiniteTransition(label = "chatListBreathing")
-    val scale by infiniteTransition.animateFloat(
-        initialValue = 1.0f,
-        targetValue = 1.1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1000, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "sailScale"
-    )
-
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector = Icons.Filled.Sailing,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .size(72.dp)
-                    .graphicsLayer(scaleX = scale, scaleY = scale)
-            )
-            Spacer(modifier = Modifier.size(16.dp))
-            Text(
-                text = "暂无会话, 请先添加联系人",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.size(8.dp))
-            Text(
-                text = "开始你的安全通讯之旅",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}

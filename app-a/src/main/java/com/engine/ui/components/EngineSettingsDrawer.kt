@@ -87,6 +87,9 @@ fun EngineSettingsDrawer(
     onOpenDid: () -> Unit,
     onOpenGroups: () -> Unit,
     onOpenMarks: () -> Unit,
+    // v3.22: 本机档案 (DID 页) —— 头像图像与昵称; 空值回退渐变头像/默认标题
+    nickname: String = "",
+    avatar: androidx.compose.ui.graphics.ImageBitmap? = null,
     content: @Composable () -> Unit,
 ) {
     ModalNavigationDrawer(
@@ -100,17 +103,30 @@ fun EngineSettingsDrawer(
             ) {
                 Column(modifier = Modifier.padding(vertical = 12.dp)) {
 
-                    // ── 头部: 头像 + DID + 指纹短码 + ✕ ─────────────
+                    // ── 头部: 头像 + 昵称 + DID + 指纹短码 + ✕ ──
                     Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
                         Column(modifier = Modifier.padding(top = 20.dp, end = 40.dp)) {
-                            GradientAvatar(
-                                seed = fingerprint ?: "unbound",
-                                label = "E",
-                                size = 44.dp,
-                            )
+                            // v3.22: 已设置头像 → 图像; 否则指纹渐变 (label 取昵称首字)
+                            if (avatar != null) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = avatar,
+                                    contentDescription = "头像",
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(com.engine.ui.theme.EngineAvatarShape(44))
+                                )
+                            } else {
+                                GradientAvatar(
+                                    seed = fingerprint ?: "unbound",
+                                    label = nickname.ifBlank { "E" },
+                                    size = 44.dp,
+                                )
+                            }
                             Spacer(Modifier.height(12.dp))
+                            // v3.22: 标题优先显示昵称 (未设置时回退 "DID 身份")
                             Text(
-                                text = "DID 身份",
+                                text = nickname.ifBlank { "DID 身份" },
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                             )

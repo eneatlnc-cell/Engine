@@ -72,6 +72,9 @@ class EngineApp : Application() {
     // v3.16: 标记物仓库 — 用户显式收藏的消息快照 (应用唯一持久化数据)
     val markerStore by lazy { com.engine.data.MarkerStore(this) }
 
+    // v3.22: 本机档案 (DID 页) — 昵称 + 头像, 仅存本机不上行
+    val profileStore by lazy { com.engine.data.ProfileStore(this) }
+
     // v3.14: 群组 (纯内存 —— 与消息/联系人同为易失态, 退出即焚)
     val groupStore = com.engine.data.GroupStore()
     private val groupCrypto = com.engine.crypto.GroupCryptoManager()

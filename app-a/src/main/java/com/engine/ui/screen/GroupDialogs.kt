@@ -142,7 +142,7 @@ fun NewGroupDialog(
                                         else Icons.Default.RadioButtonUnchecked,
                                         contentDescription = null,
                                         tint = if (checked) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }

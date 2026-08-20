@@ -179,7 +179,8 @@ fun GroupDetailScreen(
                     Text(
                         "群数据仅存内存 · 最后一人离线群即消散",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        // v3.22: 去 alpha 0.6 叠加, 夜间全对比度
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -226,7 +227,8 @@ fun GroupDetailScreen(
                     Text(
                         "圆点 = 在线",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        // v3.22: 去 alpha 0.6 叠加, 夜间全对比度
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -454,7 +456,8 @@ private fun InviteCodeCard(
         Text(
             "刷新后旧码立即作废 (自然过期 24h), 需将新码告知被邀请人",
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            // v3.22: 去 alpha 0.7 叠加, 夜间全对比度
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
