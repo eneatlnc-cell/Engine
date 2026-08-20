@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+        v3.21: debug 专属 overlay —— 放行明文流量 (ws://)
+
+        模拟器 (ws://10.0.2.2:8080/relay) 与局域网真机 (ws://<宿主机IP>:8080/relay)
+        测试拓扑均使用非 TLS 中继。targetSdk 28+ 默认 usesCleartextTraffic=false,
+        若不放行, OkHttp 会直接拒绝连接 (Cleartext HTTP traffic not permitted),
+        表现为"永远连不上中继"—— 曾导致本地调试排障困难。
+
+        仅 debug 构建并入本 overlay; release 构建保持默认禁止明文,
+        强制 wss:// (TLS) 生产形态。
+    -->
+    <application
+        android:usesCleartextTraffic="true"
+        tools:replace="android:usesCleartextTraffic" />
+
+</manifest>

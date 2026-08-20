@@ -19,8 +19,10 @@ engine/
 │   ├── core-crypto/                 # ECDH/ECDSA/AES-GCM (v2: HKDF info 绑定 + AAD)
 │   └── core-ipc/                    # URI Scheme IPC 契约 (v2: 签名回调 + 显式包名)
 │
-├── app-a/                           # Engine: 社交应用 (有 INTERNET, 无持久化)
-└── relay-server/                    # 无状态 WebSocket 中继 (Ktor + Netty, v2 挑战应答)
+├── app-a/                           # Engine: 社交应用 (有 INTERNET, 除标记物外无持久化)
+├── relay-server/                    # 无状态 WebSocket 中继 (Ktor + Netty, v2 挑战应答)
+└── docs/                            # 部署与测试方案
+    └── DEPLOY_TEST.md               # v3.21: 中继部署拓扑 + 双端 E2E 测试矩阵
 ```
 
 ## v2 安全模型摘要
@@ -36,6 +38,9 @@ engine/
 | 资源滥用 | 单 IP 连接配额 / 20 msg/s 速率限制 / 128KB 载荷上限 (v3.17.1: 支撑 40KB 文本 / 48KB 媒体消息) / 认证 30s 超时 |
 
 ## 构建与运行
+
+> 完整部署拓扑 (本机模拟器 / 局域网真机 / VPS 生产) 与双端 E2E 测试矩阵见 **[docs/DEPLOY_TEST.md](docs/DEPLOY_TEST.md)**。
+> v3.21 起 debug 包自动放行明文 `ws://` (`src/debug/AndroidManifest.xml`), release 包强制 `wss://`。
 
 ### 前置条件
 - JDK 17+
@@ -217,6 +222,18 @@ Spark 官方表情包全量 ≤44KB, 以 "一条消息" 端到端直达, 无需 
 | 消息预算定稿 | 文本上限 60KB → **40KB** (聊天文本远够用, 收紧中继最坏帧体与群扇出流量); 新增媒体预算 `MAX_MEDIA_BYTES` **48KB**, 贴纸 44KB 不变 |
 | 群组规模上限 | 新增 `GroupLimits.MAX_MEMBERS` = **200** (100Mbps 中继带宽推导, 见常量注释); 群主侧建群截断 + 满员 JOIN_RESP 拒绝 (新错误码 `GROUP_FULL`) |
 | 版本 | versionName 3.17.1 / versionCode 3 |
+
+## v3.21 变更记录 (标记物系统完善 + 部署方案)
+
+| 项 | 内容 |
+|------|------|
+| 贴纸快照 | `MarkerItem` 增 `stickerId` (默认值前向兼容); 标记贴纸消息不再退化为线格式原文, 列表卡片渲染静态缩略图 + "👋 Spark 表情" 预览; 目录未收录回退原文不丢数据 |
+| 标记物管理 | 列表页新增搜索 (内容/对端昵称)、方向分类 (全部/我发出的/收到, FilterChip 计数)、无匹配空态 |
+| 导出 | 顶栏 ShareSheet 明文导出 (`exportText()` 人类可读格式, 贴纸渲染为 emoji 预览); 导出为用户主动行为, 与"消息从不落盘"红线不冲突 |
+| 图片类支持评估 | 协议暂无图片消息类型; 未来方案已落档 `MarkerStore` 注释: 复制字节至 `marks_assets/` + `assetFile` 字段 + 引用计数清理 (YAGNI 不预置) |
+| 部署修复 | `src/debug/AndroidManifest.xml` 为 debug 包放行明文 `ws://` (targetSdk 28+ 默认禁明文, 此前模拟器/局域网拓扑实际连不上); release 强制 `wss://` |
+| 部署方案 | 新增 `docs/DEPLOY_TEST.md`: 三种部署拓扑 (模拟器双端/局域网真机/VPS 生产) + 中继容量参数表 + 21 项双端 E2E 测试矩阵 + 排障速查 |
+| 版本 | versionName 3.21.0 / versionCode 8 |
 
 ## 功能边界 (1.0)
 
