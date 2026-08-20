@@ -38,6 +38,13 @@ import java.util.Base64
  * 4. 强制执行载荷 128KB 上限 (v3.17: 64KB → 128KB, 支撑 40KB 文本 / 48KB 媒体消息)、
  *    单连接 20 msg/s 速率限制、单 IP 并发连接上限。
  *
+ * v3.18 群扇出 (修复: >21 人群客户端逐成员扇出撞单连接限流, 心跳 199 帧/tick 打死大群):
+ * 5. GROUP_SUBSCRIBE: 认证后订阅群扇出 (groupId 即鉴权, 会话态订阅表, 断开即除名)。
+ * 6. GROUP_MSG 无 target → 中继向订阅集单帧扇出 (双层令牌桶: 群级 10 msg/s +
+ *    16MB 突发/2MB/s 持续, 全局 32MB 突发/8MB/s 持续); 有 target 保留 v3.14 逐成员路径。
+ * 7. GROUP_FANOUT: PRESENCE 等群密钥控制帧扇出 (尽力投递)。
+ *    中继仍零落盘零群组语义 (不解密任何载荷, 不验证群成员身份)。
+ *
  * 协议: WebSocket (JSON 封皮 + 密文载荷), 建议部署于 TLS 反向代理之后 (wss://)
  */
 fun main() {
@@ -59,6 +66,7 @@ fun Application.configureRouting() {
     val logger = LoggerFactory.getLogger("RelayServer")
     val registry = ConnectionRegistry()
     val roomRegistry = RoomRegistry()   // v3.14: 邀请码目录 (内存 + TTL + 限流)
+    val fanoutService = GroupFanoutService()  // v3.18: 群扇出 (订阅表 + 双层令牌桶, 纯会话态)
     val ecdsa = EcdsaOperations()
     val secureRandom = SecureRandom()
     val b64e = Base64.getEncoder()
@@ -139,11 +147,12 @@ fun Application.configureRouting() {
                     val envelope = ProtocolSerializer.decode(raw) ?: continue
 
                     // v2: 发送方身份强校验 —— 消息只能以自己的注册身份发出
-                    // v3.14: GROUP_MSG / GROUP_CTRL 与 MSG 同路径透传 (中继零群组状态)
+                    // v3.14: GROUP_CTRL 与 MSG 同路径透传 (中继零群组状态)
+                    // v3.18: GROUP_MSG 按有无 target 分流 —— 有 target 走 v3.14
+                    //        逐成员路径 (兼容回退), 无 target 走订阅集扇出
                     when (envelope.type) {
                         MessageType.MSG,
                         MessageType.SIGNAL,
-                        MessageType.GROUP_MSG,
                         MessageType.GROUP_CTRL -> {
                             if (envelope.source != node.fingerprint) {
                                 logger.warn("SOURCE_MISMATCH: conn=${node.fingerprint.take(8)}... claims=${envelope.source?.take(8)}...")
@@ -163,6 +172,93 @@ fun Application.configureRouting() {
                                 send(Frame.Text(ProtocolSerializer.encodeError(
                                     ErrorCodes.TARGET_OFFLINE, "Target node is offline", target
                                 )))
+                            }
+                        }
+
+                        // v3.18: 群消息单帧上行 → 中继向订阅集扇出
+                        // (>21 人群的客户端逐成员扇出会撞 20 msg/s 限流, 见 TODO.md P0)
+                        MessageType.GROUP_MSG -> {
+                            if (envelope.source != node.fingerprint) {
+                                send(Frame.Text(ProtocolSerializer.encodeError(
+                                    ErrorCodes.SOURCE_MISMATCH,
+                                    "envelope.source does not match authenticated identity"
+                                )))
+                                close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Identity mismatch"))
+                                return@webSocket
+                            }
+                            val gid = envelope.groupId
+                            if (envelope.target == null && gid != null) {
+                                // 扇出路径: 客户端单帧上行, 中继 N 端下行
+                                when (fanoutService.fanout(gid, this, raw, raw.toByteArray().size.toLong())) {
+                                    GroupFanoutService.Admission.OK -> {}
+                                    GroupFanoutService.Admission.NO_SUBSCRIBERS ->
+                                        // 订阅集为空 = 其余成员全离线 (断开即除名);
+                                        // 回错误信封 (target=gid), 客户端可据此降级/标失败
+                                        send(Frame.Text(ProtocolSerializer.encodeError(
+                                            ErrorCodes.GROUP_NO_SUBSCRIBERS, "No subscribers for group", gid
+                                        )))
+                                    GroupFanoutService.Admission.GROUP_RATE_LIMITED ->
+                                        send(Frame.Text(ProtocolSerializer.encodeError(
+                                            ErrorCodes.GROUP_RATE_LIMITED, "Group fanout rate limited", gid
+                                        )))
+                                    GroupFanoutService.Admission.GLOBAL_LIMIT ->
+                                        send(Frame.Text(ProtocolSerializer.encodeError(
+                                            ErrorCodes.GROUP_RATE_LIMITED, "Global fanout egress limit", gid
+                                        )))
+                                }
+                            } else {
+                                // v3.14 逐成员路径 (兼容回退: 订阅未建立/旧客户端定向帧)
+                                val target = envelope.target ?: continue
+                                val targetSession = registry.findSession(target)
+                                if (targetSession != null) {
+                                    targetSession.send(Frame.Text(ProtocolSerializer.encode(envelope)))
+                                    logger.debug("GROUP_MSG routed: ${envelope.source?.take(8)}... -> ${target.take(8)}...")
+                                } else {
+                                    send(Frame.Text(ProtocolSerializer.encodeError(
+                                        ErrorCodes.TARGET_OFFLINE, "Target node is offline", target
+                                    )))
+                                }
+                            }
+                        }
+
+                        // v3.18: 群密钥控制帧扇出 (PRESENCE 心跳;
+                        // 原逐成员 1:1 扇出在 200 人群 = 单 tick 199 帧突发撞限流)
+                        MessageType.GROUP_FANOUT -> {
+                            if (envelope.source != node.fingerprint) {
+                                send(Frame.Text(ProtocolSerializer.encodeError(
+                                    ErrorCodes.SOURCE_MISMATCH,
+                                    "envelope.source does not match authenticated identity"
+                                )))
+                                close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Identity mismatch"))
+                                return@webSocket
+                            }
+                            val gid = envelope.groupId ?: continue
+                            // 心跳为尽力投递: 无订阅者 (全员离线) 静默丢弃, 限流不回错误
+                            fanoutService.fanout(gid, this, raw, raw.toByteArray().size.toLong())
+                        }
+
+                        // v3.18: 订阅群扇出 (groupId 即鉴权: 不可猜测 UUID,
+                        // 仅经 E2E 密钥分发通道扩散, 中继不验证成员身份)
+                        MessageType.GROUP_SUBSCRIBE -> {
+                            if (envelope.source != node.fingerprint) {
+                                send(Frame.Text(ProtocolSerializer.encodeError(
+                                    ErrorCodes.SOURCE_MISMATCH,
+                                    "envelope.source does not match authenticated identity"
+                                )))
+                                return@webSocket
+                            }
+                            val gid = envelope.groupId
+                            if (gid == null) {
+                                send(Frame.Text(ProtocolSerializer.encodeError(
+                                    ErrorCodes.INVALID_FORMAT, "GROUP_SUBSCRIBE requires groupId"
+                                )))
+                            } else if (!fanoutService.subscribe(gid, this)) {
+                                send(Frame.Text(ProtocolSerializer.encodeError(
+                                    ErrorCodes.GROUP_SUBSCRIBE_LIMIT,
+                                    "Subscription limit per connection exceeded", gid
+                                )))
+                            } else {
+                                logger.debug("Subscribed ${node.fingerprint.take(8)}... -> group ${gid.take(8)}...")
                             }
                         }
 
@@ -234,6 +330,8 @@ fun Application.configureRouting() {
                 registry.releaseIpSlot(clientIp)
                 // 条件注销: 仅当映射仍指向本会话时移除 (防止误删顶号后的新会话)
                 node?.let { registry.unregisterIfOwner(it.fingerprint, this) }
+                // v3.18: 会话断开即移除其全部群订阅 (扇出订阅表零残留)
+                fanoutService.unsubscribeAll(this)
                 logger.info("Connection closed from $clientIp (${registry.onlineCount()} online)")
             }
         }

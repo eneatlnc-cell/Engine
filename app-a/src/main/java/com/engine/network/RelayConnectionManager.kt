@@ -54,8 +54,8 @@ interface RelayCallback {
      */
     fun onChallenge(nonceBase64: String)
 
-    /** 收到 ERROR 消息 */
-    fun onError(code: String, message: String)
+    /** 收到 ERROR 消息 (target: v3.18 群扇出错误时为 groupId, 供上层关联降级) */
+    fun onError(code: String, message: String, target: String? = null)
 
     /**
      * 收到 GROUP_MSG 群聊消息 (v3.14, 群密钥密文)
@@ -71,6 +71,14 @@ interface RelayCallback {
      * 上层须: 成对解密后按 action 分发 (KEY/ROSTER/JOIN_REQ/LEAVE/...)
      */
     fun onGroupCtrl(source: String, target: String?, groupId: String?, payload: String, seq: Long) {}
+
+    /**
+     * 收到 GROUP_FANOUT 群密钥控制帧 (v3.18, 扇出投递)
+     *
+     * 上层须: 按 groupId 取群密钥解密 → 按 action 分发 (当前仅 PRESENCE),
+     * 按 (groupId, source) 单调 seq 防重放 (独立于 GROUP_MSG 计数空间)。
+     */
+    fun onGroupFanout(source: String, groupId: String, payload: String, seq: Long) {}
 
     /**
      * 收到 ROOM_INFO 中继目录应答 (v3.14)
@@ -228,7 +236,10 @@ class RelayConnectionManager {
     // ==================== v3.14: 群组 ====================
 
     /**
-     * 群聊消息 (同一份群密文扇出给一位成员)
+     * 群聊消息 - v3.14 逐成员定向路径 (target 必填)
+     *
+     * v3.18 起群消息默认走 [sendGroupMsgFanout] 单帧扇出; 本函数保留为
+     * 定向回退 (与中继 GROUP_MSG 带 target 的 legacy 路径对应), 当前无调用方。
      */
     fun sendGroupMsg(target: String, groupId: String, payload: String, seq: Long): Boolean {
         val json = ProtocolSerializer.encodeGroupMsg(
@@ -248,6 +259,53 @@ class RelayConnectionManager {
         val json = ProtocolSerializer.encodeGroupCtrl(
             source = myFingerprint ?: return false,
             target = target,
+            groupId = groupId,
+            payload = payload,
+            seq = seq
+        )
+        return send(json)
+    }
+
+    // ==================== v3.18: 群扇出 ====================
+
+    /**
+     * 订阅群扇出 (GROUP_SUBSCRIBE)
+     *
+     * 幂等: 认证通过/入群 KEY 落地/重连后各发一次即可, 中继订阅表为
+     * 会话态 (断开即除名), 无需退订。groupId 即鉴权 (仅经 E2E 通道扩散)。
+     */
+    fun sendGroupSubscribe(groupId: String): Boolean {
+        val json = ProtocolSerializer.encodeGroupSubscribe(
+            source = myFingerprint ?: return false,
+            groupId = groupId
+        )
+        return send(json)
+    }
+
+    /**
+     * 群消息单帧扇出 (GROUP_MSG 无 target 变体)
+     *
+     * 中继向该群订阅集投递 (排除自己); 订阅集为空时中继回
+     * GROUP_NO_SUBSCRIBERS (target=groupId), 上层可据此降级或标失败。
+     */
+    fun sendGroupMsgFanout(groupId: String, payload: String, seq: Long): Boolean {
+        val json = ProtocolSerializer.encodeGroupMsgFanout(
+            source = myFingerprint ?: return false,
+            groupId = groupId,
+            payload = payload,
+            seq = seq
+        )
+        return send(json)
+    }
+
+    /**
+     * 群密钥控制帧扇出 (GROUP_FANOUT, 当前承载 PRESENCE 心跳)
+     *
+     * 尽力投递: 无订阅者/限流时中继静默丢弃, 不回错误。
+     */
+    fun sendGroupFanout(groupId: String, payload: String, seq: Long): Boolean {
+        val json = ProtocolSerializer.encodeGroupFanout(
+            source = myFingerprint ?: return false,
             groupId = groupId,
             payload = payload,
             seq = seq
@@ -382,7 +440,9 @@ class RelayConnectionManager {
                         com.securesocial.core.protocol.ErrorPayload.serializer(),
                         payload
                     )
-                    callback?.onError(err.code, err.message)
+                    // v3.18: 关联对象在 ErrorPayload.target (如群扇出错误的 groupId);
+                    // 注意不在 envelope.target —— encodeError 将其封装于 payload
+                    callback?.onError(err.code, err.message, err.target)
                 } catch (_: Exception) {
                     callback?.onError("UNKNOWN", "Unknown error")
                 }
@@ -405,6 +465,17 @@ class RelayConnectionManager {
                 val payload = envelope.payload ?: return
                 callback?.onGroupCtrl(source, envelope.target, envelope.groupId, payload, envelope.seq)
             }
+
+            // v3.18: 群密钥控制帧 (扇出投递, 当前仅 PRESENCE) → 上层群密钥解密后分发
+            MessageType.GROUP_FANOUT -> {
+                val source = envelope.source ?: return
+                val payload = envelope.payload ?: return
+                val gid = envelope.groupId ?: return
+                callback?.onGroupFanout(source, gid, payload, envelope.seq)
+            }
+
+            // 中继不回发 GROUP_SUBSCRIBE; 忽略
+            MessageType.GROUP_SUBSCRIBE -> Unit
 
             // v3.14: 中继目录应答 (登记/查询回执)
             MessageType.ROOM_INFO -> {

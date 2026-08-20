@@ -22,8 +22,10 @@ enum class MessageType {
     ROOM_REGISTER, // v3.14: 群主向中继登记邀请码 → 群主指纹映射
     ROOM_LOOKUP,   // v3.14: 凭邀请码查询群主指纹 (中继目录服务)
     ROOM_INFO,     // v3.14: 中继对 ROOM_* 的统一应答
-    GROUP_MSG,     // v3.14: 群聊消息 (群密钥加密, 按成员扇出, 中继同 MSG 透传)
-    GROUP_CTRL     // v3.14: 群控制信令 (成对加密: 密钥分发/花名册/入群/退群/解散)
+    GROUP_MSG,     // v3.14: 群聊消息 (群密钥加密); v3.18: target=null 时走中继扇出路径
+    GROUP_CTRL,    // v3.14: 群控制信令 (成对加密: 密钥分发/花名册/入群/退群/解散)
+    GROUP_SUBSCRIBE, // v3.18: 客户端 → 中继: 订阅群扇出 (groupId 即鉴权, 中继零验证)
+    GROUP_FANOUT   // v3.18: 群密钥控制帧扇出 (PRESENCE 等, 中继向订阅集投递, 同 GROUP_MSG 密文透传)
 }
 
 /**
@@ -152,6 +154,11 @@ object ErrorCodes {
     const val AUTH_FAILED = "AUTH_FAILED"          // v2: 挑战应答失败/超时/签名不合法
     const val FINGERPRINT_MISMATCH = "FINGERPRINT_MISMATCH"  // v2: 声称指纹与公钥不匹配
     const val SOURCE_MISMATCH = "SOURCE_MISMATCH"  // v2: envelope.source 与注册身份不符
+
+    // v3.18: 群扇出 (错误信封 target 字段携带 groupId)
+    const val GROUP_NO_SUBSCRIBERS = "GROUP_NO_SUBSCRIBERS"  // 扇出消息无订阅者 (全员离线)
+    const val GROUP_RATE_LIMITED = "GROUP_RATE_LIMITED"      // 群级令牌桶拒绝 (持续速率超限)
+    const val GROUP_SUBSCRIBE_LIMIT = "GROUP_SUBSCRIBE_LIMIT" // 单连接订阅群数超上限
 }
 
 /**
@@ -356,4 +363,36 @@ object ProtocolConstants {
 
     /** v2: 单连接消息速率 (条/秒, 超限断开) */
     const val MAX_MSG_PER_SECOND = 20
+
+    // ==================== v3.18: 群扇出 ====================
+
+    /** 单连接可订阅群数上限 (防订阅表膨胀: 64 群 × 每群 200 人 已是重度用户) */
+    const val MAX_GROUP_SUBSCRIPTIONS_PER_CONNECTION = 64
+
+    /**
+     * 群级扇出令牌桶: 消息速率上限 (条/秒, 桶容量 = 速率, 即允许 1s 突发)。
+     *
+     * 200 人群聊天典型峰值 ~7 msg/s (人均 1 条/30s), 10 msg/s 覆盖活跃
+     * 时段并抑制刷屏/风暴; 超限消息被丢弃 (回 GROUP_RATE_LIMITED, 不断连)。
+     */
+    const val GROUP_FANOUT_MSG_PER_SECOND = 10
+
+    /**
+     * 群级扇出字节预算: 持续速率 (bytes/s) 与突发容量 (bytes)。
+     *
+     * 突发容量 16MB > 200 人单条贴纸扇出 egress ≈15.6MB (≈79KB 帧 × 199),
+     * 即单条满额贴纸可整帧放行 (瞬时 ~1.25s 满管), 随后以 2MB/s 补充 ——
+     * "吸收突发 + 限持续速率"; 连续大贴纸会被迫降速而非丢弃首条。
+     */
+    const val GROUP_FANOUT_BYTES_PER_SECOND = 2L * 1024 * 1024
+    const val GROUP_FANOUT_BYTES_BURST = 16L * 1024 * 1024
+
+    /**
+     * 全局扇出 egress 护栏 (令牌桶): 持续 8MB/s / 突发 32MB。
+     *
+     * 100Mbps ≈ 12.5MB/s: 全局扇出持续吃 8MB/s, 为 1:1 消息/信令留 ~4.5MB/s;
+     * 突发容量 32MB 允许两个大群贴纸同时放行 (2 × 15.6MB), 第三个起排队。
+     */
+    const val GLOBAL_FANOUT_BYTES_PER_SECOND = 8L * 1024 * 1024
+    const val GLOBAL_FANOUT_BYTES_BURST = 32L * 1024 * 1024
 }

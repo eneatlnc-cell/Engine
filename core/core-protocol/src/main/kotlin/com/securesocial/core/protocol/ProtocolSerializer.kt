@@ -246,6 +246,64 @@ object ProtocolSerializer {
     }
 
     /**
+     * GROUP_MSG 扇出变体 (v3.18): 单帧上行, 无 target。
+     *
+     * 中继收到 target=null 的 GROUP_MSG → 向该 groupId 的订阅集扇出
+     * (订阅集为空回 GROUP_NO_SUBSCRIBERS); 旧版中继 (不识别) 会静默丢弃,
+     * 部署顺序须先升中继再发客户端。
+     */
+    fun encodeGroupMsgFanout(
+        source: String,
+        groupId: String,
+        payload: String,
+        seq: Long
+    ): String {
+        return encode(MessageEnvelope(
+            type = MessageType.GROUP_MSG,
+            source = source,
+            payload = payload,
+            seq = seq,
+            groupId = groupId
+        ))
+    }
+
+    /**
+     * GROUP_SUBSCRIBE - 订阅群扇出 (v3.18, 客户端 → 中继)
+     *
+     * groupId 为不可猜测 UUID, 仅经 E2E 密钥分发通道扩散:
+     * 能订阅即持有群秘密, 订阅本身即鉴权 (中继不验证成员身份,
+     * 非成员订阅者拿到的只是无法解密的密文)。幂等, 重连后重发。
+     */
+    fun encodeGroupSubscribe(source: String, groupId: String): String {
+        return encode(MessageEnvelope(
+            type = MessageType.GROUP_SUBSCRIBE,
+            source = source,
+            groupId = groupId
+        ))
+    }
+
+    /**
+     * GROUP_FANOUT - 群密钥控制帧扇出 (v3.18)
+     *
+     * payload 为 GroupCtrlPayload JSON 的群密钥密文 (AAD 绑定 gid+source+seq),
+     * 当前承载 PRESENCE 心跳; 中继同 GROUP_MSG 透传给订阅集 (排除发送者)。
+     */
+    fun encodeGroupFanout(
+        source: String,
+        groupId: String,
+        payload: String,
+        seq: Long
+    ): String {
+        return encode(MessageEnvelope(
+            type = MessageType.GROUP_FANOUT,
+            source = source,
+            payload = payload,
+            seq = seq,
+            groupId = groupId
+        ))
+    }
+
+    /**
      * 解析 GROUP_CTRL 明文 (解密后调用)
      */
     fun decodeGroupCtrlPayload(payload: String): GroupCtrlPayload? = try {

@@ -79,6 +79,12 @@ class EngineApp : Application() {
     // ---- v3.14: 群消息防重放 ((groupId:source) → 已见最大 seq) ----
     private val lastGroupSeq = SeqGuard()
 
+    // ---- v3.18: 扇出控制帧 (PRESENCE) 防重放, 独立于 lastGroupSeq ----
+    // 中继 GROUP_FANOUT 为异步投递、GROUP_MSG 为同步路由, 两者对同一发送者
+    // 无顺序保证 —— 共享计数空间会出现 "心跳 seq 先到 → 后到消息被误判重放"。
+    // seq 同源 (msgSeqCounter), 各计数空间内仍严格单调, 分离后互不干扰。
+    private val lastFanoutSeq = SeqGuard()
+
     /**
      * v3.17 防重放记录器: source → 已见最大 seq, 带条目上限。
      *
@@ -286,6 +292,12 @@ class EngineApp : Application() {
         /** v3.14.1: 群心跳间隔 */
         private const val PRESENCE_INTERVAL_MS = 30_000L
 
+        /** v3.18: 扇出关联表条目有效期 (超时视为已送达/不再关联错误) */
+        private const val FANOUT_PENDING_TTL_MS = 60_000L
+
+        /** v3.18: 大群心跳隔拍阈值 (≥100 人 → 心跳间隔 30s → 60s) */
+        private const val PRESENCE_BIG_GROUP_MEMBERS = 100
+
         /** v3.14.1: 成员失联判定窗口 (3 个心跳周期无信号 = 失联) */
         private const val MEMBER_TIMEOUT_MS = 90_000L
 
@@ -410,8 +422,12 @@ class EngineApp : Application() {
                 handleRelayChallenge(nonceBase64)
             }
 
-            override fun onError(code: String, message: String) {
-                Log.w(TAG, "Relay error: $code - $message")
+            override fun onError(code: String, message: String, target: String?) {
+                Log.w(TAG, "Relay error: $code - $message (target=${target?.take(8)}...)")
+                // v3.18: 扇出消息无订阅者 (其余成员全离线) → 关联消息标失败
+                if (code == com.securesocial.core.protocol.ErrorCodes.GROUP_NO_SUBSCRIBERS && target != null) {
+                    failPendingFanoutMessages(target)
+                }
             }
 
             // v3.14: 群消息/群控制/目录回执
@@ -430,6 +446,13 @@ class EngineApp : Application() {
             override fun onConnected() {
                 relayConnectedSince = System.currentTimeMillis()
                 Log.i(TAG, "Relay connected (authenticated)")
+                // v3.18: 重连后全群重订阅 (中继订阅表为会话态, 断开即除名)
+                resubscribeAllGroups()
+            }
+
+            // v3.18: 群密钥控制帧扇出 (PRESENCE) → 群密钥解密后分发
+            override fun onGroupFanout(source: String, groupId: String, payload: String, seq: Long) {
+                handleIncomingGroupFanout(source, groupId, payload, seq)
             }
 
             override fun onDisconnected() {
@@ -764,6 +787,9 @@ class EngineApp : Application() {
         // v3.14.1: 建群播种在场表 (全员宽限一个失联窗口)
         seedPresence(gid, group.members.map { it.fp })
 
+        // v3.18: 建群即订阅扇出 (群主第一个订阅; 成员在 KEY 落地时订阅)
+        relayManager.sendGroupSubscribe(gid)
+
         // 中继目录登记 (异步回执; CODE_TAKEN 自动换码重试)
         group.inviteCode?.let { relayManager.sendRoomRegister(it) }
 
@@ -870,7 +896,6 @@ class EngineApp : Application() {
             messageStore.updateMessageStatus(messageId, MessageStatus.FAILED)
             return
         }
-        val targets = group.members.map { it.fp }.filter { it != myFp }
         val seq = msgSeqCounter.incrementAndGet()
         val aad = groupCrypto.buildGroupAad(groupId, myFp, seq)
         val ciphertext = try {
@@ -879,13 +904,52 @@ class EngineApp : Application() {
             messageStore.updateMessageStatus(messageId, MessageStatus.FAILED)
             return
         }
-        val anySent = targets.isEmpty() ||
-                targets.any { relayManager.sendGroupMsg(it, groupId, ciphertext, seq) }
+
+        // v3.18: 单帧上行扇出 —— 原逐成员 N-1 帧在 >21 人群直接撞中继
+        // 20 msg/s 单连接限流 (199 帧突发 = 立即断连), 且 40KB 满额文本
+        // × 199 ≈ 10.6MB 上行远超手机上行带宽。现由中继向订阅集扇出,
+        // 发送方上行恒为 1 帧 (AAD 绑定 gid+发送者+seq, 密文与接收者无关,
+        // 扇出各方解密同一份密文)。
+        val others = group.members.any { it.fp != myFp }
+        val sent = if (!others) {
+            true // 单人群: 无投递对象, 视作成功
+        } else {
+            pendingFanout[messageId] = groupId to System.currentTimeMillis()
+            relayManager.sendGroupMsgFanout(groupId, ciphertext, seq)
+        }
         messageStore.updateMessageStatus(
             messageId,
-            if (anySent) MessageStatus.SENT else MessageStatus.FAILED
+            if (sent) MessageStatus.SENT else MessageStatus.FAILED
         )
         groupStore.updateLastMessage(groupId, text, System.currentTimeMillis())
+    }
+
+    /**
+     * v3.18: 扇出消息的中继回执关联表 (messageId → groupId/发送时刻)
+     *
+     * 中继对无订阅者的扇出消息回 GROUP_NO_SUBSCRIBERS (target=groupId),
+     * 据此把仍处 SENT 状态的关联消息改判 FAILED (语义 = 其余成员全离线,
+     * 与 v3.14 逐成员路径 "全员离线即失败" 一致)。条目由心跳 tick 定期清理。
+     */
+    private val pendingFanout = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+
+    /** GROUP_NO_SUBSCRIBERS 到达: 关联消息标失败 */
+    private fun failPendingFanoutMessages(groupId: String) {
+        val now = System.currentTimeMillis()
+        pendingFanout.entries.removeIf { (msgId, entry) ->
+            val (gid, sentAt) = entry
+            val stale = now - sentAt > FANOUT_PENDING_TTL_MS
+            if (!stale && gid == groupId) {
+                messageStore.updateMessageStatus(msgId, MessageStatus.FAILED)
+            }
+            stale || gid == groupId
+        }
+    }
+
+    /** 心跳 tick 顺带清理过期的扇出关联条目 */
+    private fun prunePendingFanout() {
+        val now = System.currentTimeMillis()
+        pendingFanout.entries.removeIf { it.value.second < now - FANOUT_PENDING_TTL_MS }
     }
 
     /**
@@ -926,6 +990,41 @@ class EngineApp : Application() {
             groupStore.updateLastMessage(groupId, "$senderName: $text", msg.timestamp)
         } catch (e: Exception) {
             Log.e(TAG, "Group message handling failed: ${e.message}")
+        }
+    }
+
+    /**
+     * 收到扇出控制帧 (v3.18, GROUP_FANOUT): 群密钥解密后分发
+     *
+     * 当前仅承载 PRESENCE 心跳 (原 1:1 逐成员路径)。密文为
+     * GroupCtrlPayload JSON 经群密钥加密 (AAD 绑定 gid+source+seq,
+     * 与群消息同构), 防重放走独立计数空间 (见 lastFanoutSeq 注释)。
+     */
+    private fun handleIncomingGroupFanout(source: String, groupId: String, payload: String, seq: Long) {
+        try {
+            val group = groupStore.getGroup(groupId) ?: return
+            val key = group.groupKey ?: return
+
+            val seqKey = "$groupId:$source"
+            if (lastFanoutSeq.isReplay(seqKey, seq)) return
+
+            val aad = groupCrypto.buildGroupAad(groupId, source, seq)
+            val plaintext = try {
+                groupCrypto.decrypt(payload, key, aad)
+            } catch (e: Exception) {
+                return  // 密钥落后 (轮换间隙): 本拍丢弃, 心跳周期性重发
+            }
+            lastFanoutSeq.record(seqKey, seq)
+
+            val ctrl = ProtocolSerializer.decodeGroupCtrlPayload(plaintext) ?: return
+            if (ctrl.action == com.securesocial.core.protocol.GroupCtrlActions.PRESENCE) {
+                presenceSeen.getOrPut(groupId) { ConcurrentHashMap() }[source] =
+                    System.currentTimeMillis()
+            }
+            // 其余 action 防御性忽略: 当前协议仅 PRESENCE 走扇出,
+            // 后续若扩展 (如群级广播信令) 在此分发
+        } catch (e: Exception) {
+            Log.e(TAG, "Group fanout handling failed: ${e.message}")
         }
     }
 
@@ -1131,6 +1230,28 @@ class EngineApp : Application() {
         }
         // v3.14.1: 花名册全体播入在场表 (宽限窗口, 防刚入群即被判失联)
         seedPresence(gid, members.map { it.fp })
+
+        // v3.18: KEY 落地即订阅扇出 —— 首次到达 = 入群成功;
+        // 轮换/补发/主权接管到达时订阅已存在, 幂等无害 (KEY 是群秘密
+        // 到手的唯一时刻, groupId 仅随 KEY 扩散, 订阅时机与之绑定)
+        relayManager.sendGroupSubscribe(gid)
+    }
+
+    /**
+     * v3.18: 全群重订阅 (重连后调用)
+     *
+     * 中继订阅表为会话态 (断开即除名), 每次 HELLO ack 后对持有群密钥的
+     * 群各发一帧 GROUP_SUBSCRIBE; 未持钥的群不订阅 (拿不到密文也无意义)。
+     * 单连接订阅上限 64 群 (中继侧 GROUP_SUBSCRIBE_LIMIT), 超限群退化为
+     * 无法扇出 —— 重度用户场景后续再议 (分批订阅/上限提升)。
+     */
+    private fun resubscribeAllGroups() {
+        val count = groupStore.groups.value.count { g ->
+            g.groupKey != null && relayManager.sendGroupSubscribe(g.id)
+        }
+        if (count > 0) {
+            Log.d(TAG, "Resubscribed $count group(s) for fanout after reconnect")
+        }
     }
 
     /** 群主: 轮换群密钥并对余员重发 KEY */
@@ -1219,8 +1340,9 @@ class EngineApp : Application() {
     /**
      * 启动群在场心跳循环 (Application onCreate 起, 常驻)
      *
-     * 每 30s 一拍:
-     * 1. 向所有群的其他成员广播 PRESENCE (经 1:1 会话密钥, 无会话自动 ECDH)
+     * 每 30s 一拍 (大群隔拍 → 实际 60s):
+     * 1. 向各群广播 PRESENCE (v3.18: GROUP_FANOUT 单帧上行, 中继向订阅集扇出;
+     *    原 1:1 逐成员在 200 人群 = 单 tick 199 帧突发, 直撞 20 msg/s 限流)
      * 2. 判定 (须本轮中继连接连续在线 ≥ 失联窗口, 防重连后全员"失联"误判):
      *    - 我是群主: 清退失联成员 (视同退群 → 轮换密钥)
      *    - 我非群主: 群主失联且我是顺位首位在线成员 → 接管群主权
@@ -1241,21 +1363,48 @@ class EngineApp : Application() {
         }
     }
 
+    /** 心跳拍计数 (大群隔拍用) */
+    private var presenceTickCount = 0L
+
     private fun groupPresenceTick() {
         if (relayManager.connectionState.value != ConnectionState.CONNECTED) return
         val myFp = sessionManager.identityFingerprint ?: return
         val now = System.currentTimeMillis()
         val A = com.securesocial.core.protocol.GroupCtrlActions
 
+        presenceTickCount++
+        prunePendingFanout()
+
         for (group in groupStore.groups.value.toList()) {
             if (group.groupKey == null) continue
-            val others = group.members.map { it.fp }.filter { it != myFp }
+            val hasOthers = group.members.any { it.fp != myFp }
+            if (!hasOthers) continue
 
-            // 1. 心跳广播
-            val beat = com.securesocial.core.protocol.GroupCtrlPayload(
-                action = A.PRESENCE, groupId = group.id
-            )
-            others.forEach { sendGroupCtrlTo(it, beat) }
+            // 1. 心跳广播 (v3.18: 单帧扇出)
+            //
+            // 原 1:1 逐成员路径每 tick 突发 N-1 帧 (200 人群 = 199 帧),
+            // 撞中继 20 msg/s 单连接限流, 全员在线聚合 ≈1,327 帧/s ——
+            // 大群无人说话也会被心跳打死。现 GROUP_FANOUT 单帧上行,
+            // 中继向订阅集扇出 (尽力投递, 全员离线时静默丢弃)。
+            // 大群 (≥100 人) 隔拍: 60s 间隔, 200 人 presence 下行 ≈1MB/s (占管 8%)。
+            val everyN = if (group.members.size >= PRESENCE_BIG_GROUP_MEMBERS) 2L else 1L
+            if (presenceTickCount % everyN == 0L) {
+                val beat = com.securesocial.core.protocol.GroupCtrlPayload(
+                    action = A.PRESENCE, groupId = group.id
+                )
+                val seq = msgSeqCounter.incrementAndGet()
+                val aad = groupCrypto.buildGroupAad(group.id, myFp, seq)
+                try {
+                    val ciphertext = groupCrypto.encrypt(
+                        ProtocolSerializer.encodeGroupCtrlJson(beat),
+                        group.groupKey!!,
+                        aad
+                    )
+                    relayManager.sendGroupFanout(group.id, ciphertext, seq)
+                } catch (e: Exception) {
+                    // 群密钥异常 (轮换间隙等): 本拍跳过, 下拍重试
+                }
+            }
 
             // 2. 失联判定 (须连续在线满一个窗口)
             if (now - relayConnectedSince < MEMBER_TIMEOUT_MS) continue
