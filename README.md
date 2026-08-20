@@ -23,7 +23,8 @@ engine/
 ├── relay-server/                    # 无状态 WebSocket 中继 (Ktor + Netty, v2 挑战应答)
 └── docs/                            # 部署与测试方案
     ├── DEPLOY_TEST.md               # v3.21: 中继部署拓扑 + 双端 E2E 测试矩阵
-    └── VPS_DEPLOY.md                # v3.21: VPS 从零部署手册 (systemd/Nginx TLS/验收清单)
+    ├── VPS_DEPLOY.md                # v3.21: VPS 从零部署手册 (systemd/Nginx TLS/验收清单)
+    └── ECS_DEPLOY.md                # v3.21: 阿里云 ECS 过渡部署 (极早期, 差异章节 + 引用 VPS 手册)
 ```
 
 ## v2 安全模型摘要
