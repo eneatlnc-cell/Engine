@@ -33,7 +33,7 @@ engine/
 | ECDH 公钥中间人替换 | SIGNAL 信令携带身份签名, 接收端验签且指纹匹配才采纳 |
 | 消息重放/移植 | GCM AAD 绑定 (source, target, seq) + 接收端 seq 单调递增校验 |
 | 身份漂移 | 绑定公钥持久化, 二次启动恢复同一身份, 绝不静默生成新身份 |
-| 资源滥用 | 单 IP 连接配额 / 20 msg/s 速率限制 / 128KB 载荷上限 (v3.17: 支撑 60KB 媒体消息) / 认证 30s 超时 |
+| 资源滥用 | 单 IP 连接配额 / 20 msg/s 速率限制 / 128KB 载荷上限 (v3.17.1: 支撑 40KB 文本 / 48KB 媒体消息) / 认证 30s 超时 |
 
 ## 构建与运行
 
@@ -77,7 +77,8 @@ engine/
   国际带宽充足, 对 wss:// 长连接无干扰。
 - 中继零状态零落盘 (仅路由密文), 换机/迁移只需改 DNS —— 选址不构成
   长期锁定风险。
-- 注意: 需选择支持无限流/高流量包的套餐, 媒体消息 (60KB/条) 上线后
+- 注意: 需选择支持无限流/高流量包的套餐, 媒体消息 (贴纸 ≤44KB/条, Base64 后 ~59KB)
+  上线后
   流量画像会显著高于纯文本时代。
 
 ### 1. 构建并上传
@@ -197,8 +198,8 @@ curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
 
 | 项 | 内容 |
 |------|------|
-| 消息上限 | `SparkEconomy.MAX_MESSAGE_BYTES` 1KB → **60KB**; 图片/表情/贴纸可直接装载 (Base64 后 ≈80KB 密文) |
-| 信封上限 | `MessageEnvelope.MAX_PAYLOAD_SIZE` 64KB → **128KB** (覆盖 60KB 明文 × 加密 + Base64 膨胀系数 4/3 + 信封开销), 中继服务端同源常量自动生效 |
+| 消息上限 | `SparkEconomy.MAX_MESSAGE_BYTES` 1KB → **40KB** (文本); 新增 `MAX_MEDIA_BYTES` **48KB** (贴纸/表情, 解码后字节) —— 媒体以 Base64 文本装载 (~64KB) 超出文本上限, 故单独计限 |
+| 信封上限 | `MessageEnvelope.MAX_PAYLOAD_SIZE` 64KB → **128KB** (覆盖 48KB 媒体 × 加密 + Base64 膨胀 + 信封开销, 最坏 ≈86KB, 余量 ~33%), 中继服务端同源常量自动生效 |
 | 本地护栏 | `sendMessageToPeer` / `sendGroupMessage` 发送前按 UTF-8 字节预检, 超限直接判失败, 不再依赖服务端拒绝 |
 | 防重放内存 | 三处防重放计数器 (1:1 / 群消息 / 群控制) 由裸 `ConcurrentHashMap` 换为带 2048 条上限的 `SeqGuard`, 修复长期运行内存无限增长 |
 | IPC 日志泄露 | sign 请求 payload 与 callback 的 sig/result 移出 URI 查询串, 改走 Intent Extra —— 不再随 ActivityTaskManager 的 START 日志进 logcat (双端同步, 旧 URI 参数保留解析兼容) |
@@ -206,8 +207,16 @@ curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
 | 版本 | versionName 3.17.0 / versionCode 2 |
 
 贴纸格式约定: 动态贴纸单帧 PNG/WebP 透明底, 512×512, 动态版本
-(WebP/Lottie 类 .tgs 思路) 压缩后须 ≤ 60KB —— 与单条消息上限同口径,
-保证贴纸以 "一条消息" 端到端直达, 无需 CDN 引用。
+(WebP/Lottie 类 .tgs 思路) 压缩后须 ≤ `MAX_MEDIA_BYTES` (48KB) ——
+Spark 官方表情包全量 ≤44KB, 以 "一条消息" 端到端直达, 无需 CDN 引用。
+
+## v3.17.1 变更记录
+
+| 项 | 内容 |
+|------|------|
+| 消息预算定稿 | 文本上限 60KB → **40KB** (聊天文本远够用, 收紧中继最坏帧体与群扇出流量); 新增媒体预算 `MAX_MEDIA_BYTES` **48KB**, 贴纸 44KB 不变 |
+| 群组规模上限 | 新增 `GroupLimits.MAX_MEMBERS` = **200** (100Mbps 中继带宽推导, 见常量注释); 群主侧建群截断 + 满员 JOIN_RESP 拒绝 (新错误码 `GROUP_FULL`) |
+| 版本 | versionName 3.17.1 / versionCode 3 |
 
 ## 功能边界 (1.0)
 

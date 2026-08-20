@@ -189,6 +189,25 @@ data class RoomInfoPayload(
 )
 
 /**
+ * 群组规模常量 (v3.17.1)
+ *
+ * MAX_MEMBERS = 200 的推导 (100Mbps 中继带宽 ≈ 12.5MB/s):
+ * - 群消息经中继向 N-1 在线成员扇出, 单条最坏 egress = (N-1) × 帧体。
+ * - N=200: 40KB 文本 (帧 ≈54KB) → ~10.6MB ≈ 0.85s 满管;
+ *   48KB 媒体 (帧 ≈86KB) → ~17.1MB ≈ 1.37s 满管 —— 单条消息瞬时打满
+ *   但可被群级限流吸收, 可接受。
+ * - N=500: 单条媒体 ≈ 3.4s 满管, 两个并发大群即互相饿死, 不可接受。
+ * - 100Mbps ÷ 200 人 = 人均 ~62KB/s 扇出预算, 与聊天负载匹配。
+ *
+ * 群成员表仅存在于群主客户端 (中继零群组状态), 上限由群主侧在
+ * 建群/入群批准两处强制执行。
+ */
+object GroupLimits {
+    /** 单群成员上限 (含群主) */
+    const val MAX_MEMBERS = 200
+}
+
+/**
  * 群组操作错误码 (v3.14)
  */
 object GroupErrorCodes {
@@ -197,6 +216,7 @@ object GroupErrorCodes {
     const val NOT_FOUND = "NOT_FOUND"             // 邀请码不存在/已过期
     const val RATE_LIMITED = "RATE_LIMITED"       // 查询限流 (防枚举)
     const val UNAUTHORIZED = "UNAUTHORIZED"       // 非群主操作他人映射
+    const val GROUP_FULL = "GROUP_FULL"           // v3.17.1: 群成员已达上限 (200)
 }
 
 /**
@@ -320,9 +340,10 @@ object ProtocolConstants {
     /**
      * WebSocket 单帧 (JSON 信封全文) 字节数上限 (v2 服务端强制执行)。
      *
-     * v3.17: 64KB → 128KB。消息密文以 Base64 装载于 JSON 信封 (膨胀系数 4/3),
-     * SparkEconomy.MAX_MESSAGE_BYTES=60KB 的明文经加密+Base64 后约 80.1KB,
-     * 叠加信封字段与转义开销, 128KB 为 60KB 媒体消息留足余量。
+     * v3.17: 64KB → 128KB。v3.17.1 消息预算定稿 (文本 40KB / 媒体 48KB) 后核算:
+     * - 40KB 文本 → 加密+Base64 后信封 ≈54KB
+     * - 48KB 媒体文件 → Base64 文本 ~64KB → 加密+Base64 后信封 ≈86KB
+     * 128KB 对最坏情况 (媒体) 仍有 ~33% 余量, 维持不变。
      */
     const val MAX_PAYLOAD_SIZE = 128 * 1024
     const val WEBSOCKET_PATH = "/relay"

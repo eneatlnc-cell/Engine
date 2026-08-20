@@ -35,7 +35,8 @@ import java.util.Base64
  *    服务器验证 "持有该指纹对应私钥" 后才允许注册, 未认证连接一律拒绝。
  * 2. envelope.source 强制等于注册指纹 (MSG/SIGNAL), 冒充他人发送即断开。
  * 3. 认证前只接受 HELLO / HELLO_AUTH; 认证有 30s 超时。
- * 4. 强制执行载荷 64KB 上限、单连接 20 msg/s 速率限制、单 IP 并发连接上限。
+ * 4. 强制执行载荷 128KB 上限 (v3.17: 64KB → 128KB, 支撑 40KB 文本 / 48KB 媒体消息)、
+ *    单连接 20 msg/s 速率限制、单 IP 并发连接上限。
  *
  * 协议: WebSocket (JSON 封皮 + 密文载荷), 建议部署于 TLS 反向代理之后 (wss://)
  */

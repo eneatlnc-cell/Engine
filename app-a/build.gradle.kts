@@ -12,8 +12,9 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "3.17.0"
+        // v3.17.1: 消息预算定稿 (文本 40KB / 媒体 48KB) + 群组 200 人上限
+        versionCode = 3
+        versionName = "3.17.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

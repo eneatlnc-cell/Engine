@@ -654,11 +654,15 @@ class EngineApp : Application() {
     }
 
     /**
-     * v3.17: 本地消息体护栏 — UTF-8 字节数 ≤ SparkEconomy.MAX_MESSAGE_BYTES (60KB)。
+     * v3.17: 本地消息体护栏 — UTF-8 字节数 ≤ SparkEconomy.MAX_MESSAGE_BYTES。
      *
      * 按 UTF-8 字节而非字符数计算 (中英文/Emoji 同权), 与服务端
      * (中继按信封全文长度) 及计费口径一致。图片/表情/贴纸等媒体
      * 载荷应在上游压缩至限额内或转为引用发送。
+     *
+     * v3.17.1: 文本上限 60KB → 40KB; 媒体消息 (贴纸) 按
+     * SparkEconomy.MAX_MEDIA_BYTES (48KB, 解码后字节) 单独计限,
+     * 不走本文本护栏 —— 表情面板接入时须区分两轨。
      */
     private fun exceedsMessageLimit(text: String): Boolean =
         text.toByteArray(Charsets.UTF_8).size > SparkEconomy.MAX_MESSAGE_BYTES
@@ -666,7 +670,7 @@ class EngineApp : Application() {
     /**
      * 统一发送入口 (v2): 加密 (AAD 绑定 seq) → 中继发送 → 更新状态
      *
-     * v3.17: 发送前按 SparkEconomy.MAX_MESSAGE_BYTES (60KB) 做本地护栏,
+     * v3.17: 发送前按 SparkEconomy.MAX_MESSAGE_BYTES 做本地护栏,
      * 超限消息直接判失败, 不再依赖服务端拒绝 —— 图片/表情/贴纸等
      * 媒体载荷同价计费, 超限应在上游压缩或转引用。
      */
@@ -730,12 +734,19 @@ class EngineApp : Application() {
         val gid = groupStore.newGroupId()
         val key = groupCrypto.generateGroupKey()
         val me = com.engine.data.GroupMember(myFp, "我", com.securesocial.core.protocol.GroupRoles.OWNER)
-        val others = memberFps.filter { it != myFp }.distinct().map { fp ->
-            com.engine.data.GroupMember(
-                fp = fp,
-                nickname = contactStore.getContact(fp)?.nickname ?: "用户 ${fp.take(8)}",
-                role = com.securesocial.core.protocol.GroupRoles.MEMBER
-            )
+        // v3.17.1: 200 人上限 (含群主) —— 中继带宽推导见 GroupLimits;
+        // 防御性截断 (UI 正常不会超), 超出部分丢弃并记日志
+        val others = memberFps.filter { it != myFp }.distinct()
+            .take(com.securesocial.core.protocol.GroupLimits.MAX_MEMBERS - 1)
+            .map { fp ->
+                com.engine.data.GroupMember(
+                    fp = fp,
+                    nickname = contactStore.getContact(fp)?.nickname ?: "用户 ${fp.take(8)}",
+                    role = com.securesocial.core.protocol.GroupRoles.MEMBER
+                )
+            }
+        if (memberFps.distinct().size > com.securesocial.core.protocol.GroupLimits.MAX_MEMBERS) {
+            Log.w(TAG, "createGroup: member list truncated to ${com.securesocial.core.protocol.GroupLimits.MAX_MEMBERS} (GroupLimits.MAX_MEMBERS)")
         }
         val group = com.engine.data.EngineGroup(
             id = gid,
@@ -840,8 +851,10 @@ class EngineApp : Application() {
      * 群密钥加密一次 (AAD 与接收者无关) → 按成员扇出同一份密文;
      * 任一投递成功即视为已发送 (中继离线即丢弃, 无离线补投)。
      *
-     * v3.17: 与 1:1 消息同口径的 60KB 本地护栏 (群密文按成员扇出 N 份,
+     * v3.17: 与 1:1 消息同口径的文本护栏 (群密文按成员扇出 N 份,
      * 超限媒体消息在群场景会放大中继流量, 更应在上游压缩)。
+     * v3.17.1: 上限 60KB → 40KB; 200 人群单条 40KB 文本扇出 egress
+     * ≈10.6MB (100Mbps ≈0.85s 满管), 上限收紧直接压缩群场景最坏流量。
      */
     fun sendGroupMessage(groupId: String, messageId: String, text: String) {
         val myFp = sessionManager.identityFingerprint ?: return
@@ -965,6 +978,19 @@ class EngineApp : Application() {
                 val group = groupStore.findByInviteCode(code) ?: return
                 if (!group.isOwner) return
                 if (group.members.any { it.fp == source }) return
+
+                // v3.17.1: 200 人上限 —— 满员拒绝 (JOIN_RESP approved=false),
+                // 申请者侧不落地 KEY 即未入群
+                if (group.members.size >= com.securesocial.core.protocol.GroupLimits.MAX_MEMBERS) {
+                    Log.i(TAG, "Group ${group.id.take(8)}... join rejected: full (${group.members.size} members)")
+                    sendGroupCtrlTo(source, com.securesocial.core.protocol.GroupCtrlPayload(
+                        action = A.JOIN_RESP,
+                        groupId = group.id,
+                        approved = false,
+                        reason = com.securesocial.core.protocol.GroupErrorCodes.GROUP_FULL
+                    ))
+                    return
+                }
 
                 val nickname = contactStore.getContact(source)?.nickname
                     ?: ctrl.requesterFp?.let { "用户 ${it.take(8)}" }
