@@ -12,10 +12,9 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.23: 联系人页重构 (去搜索框/添加按钮常驻) + 添加凭据唯一化
-        // (仅指纹, 大小写归一根治不对应) + 搜索框添加路径 + DID 不可复制
-        versionCode = 12
-        versionName = "3.23.0"
+        // v3.23.1: DID 卡提示中性化 + @短码展示恢复 (设定保留, 语法后续实现)
+        versionCode = 13
+        versionName = "3.23.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

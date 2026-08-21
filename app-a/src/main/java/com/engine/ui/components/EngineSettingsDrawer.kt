@@ -71,7 +71,7 @@ import com.engine.ui.theme.EngineMotion
  *        右上角 ✕ 按产品要求叠加 (显式关闭的可达性兜底)。
  *
  *  内容:
- *    头部  头像 + 昵称 + DID 短格式 + 指纹短码 (展示用)
+ *    头部  头像 + 昵称 + DID 短格式 + @指纹短码
  *    行 1  DID 身份    → [onOpenDid]
  *    行 2  群组        → [onOpenGroups]
  *    行 3  标记物      → [onOpenMarks]
@@ -137,10 +137,10 @@ fun EngineSettingsDrawer(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Spacer(Modifier.height(6.dp))
-                            // v3.23: @搜索语法已移除 (凭据唯一化, 仅指纹),
-                            // 短码仅作展示标识
+                            // @短码设定保留 (v3.23 用户决策): 当前仅展示,
+                            // "@短码搜索/添加" 语法后续实现
                             Text(
-                                text = "指纹 ${fingerprintShort(fingerprint)}",
+                                text = "@${fingerprintShort(fingerprint)}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Medium,
@@ -315,7 +315,7 @@ internal fun didShort(fingerprint: String?): String =
     if (fingerprint.isNullOrBlank()) "did:engine:未绑定"
     else "did:engine:${fingerprint.take(8)}…"
 
-/** 指纹短码 (展示用): @搜索语法已于 v3.23 移除, 搜索/添加仅走完整指纹 */
+/** 指纹短码: @短码设定保留, "@短码搜索/添加" 语法后续实现 (v3.23) */
 internal fun fingerprintShort(fingerprint: String?): String =
     if (fingerprint.isNullOrBlank()) "未绑定"
     else fingerprint.take(6).uppercase()

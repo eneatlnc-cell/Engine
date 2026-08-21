@@ -273,13 +273,13 @@ fun DidScreen(
             Spacer(Modifier.height(14.dp))
 
             // ── DID 卡 (只读, v3.23 不可复制) ──────────────────
-            // 添加联系人凭据唯一化: DID 不再可复制, 杜绝 "DID 与指纹
-            // 添加出两个不对应联系人" 的入口 (用户决策)
+            // 添加联系人凭据唯一化: DID 纯展示不可复制 (用户决策);
+            // hint 为中性说明, 不含添加引导
             InfoCard(
                 icon = { Icon(Icons.Filled.Fingerprint, null, tint = MaterialTheme.colorScheme.primary) },
                 title = "DID",
                 value = "did:engine:${fingerprint ?: "未绑定"}",
-                hint = "由密钥指纹派生 · 添加联系人请使用下方指纹",
+                hint = "由密钥指纹派生 · 永久不变",
                 onClick = null
             )
 
