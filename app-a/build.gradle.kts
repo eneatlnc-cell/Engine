@@ -1,31 +1,16 @@
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
 }
 
-// ---- v3.23.3: 可选共享签名 (Engine 与 Vault 必须同证书) ------------------
-//
-// 根因背景: 两 App 的全部 IPC 入口由 signature 级自定义权限互锁
-// (com.vault.permission.VAULT_IPC / com.engine.permission.ENGINE_CALLBACK),
-// 签名证书不一致时: ①跨应用唤起直接 SecurityException (表现为
-// "无法唤起 Vault"); ②无法覆盖安装, 更新必须卸载重装 → 应用数据全清
-// → "应用更新造成用户身份丢失"。
-//
-// 机制: 仓库根目录放一份 signing.properties (已被 .gitignore 排除,
-// 密钥绝不入库), 两工程填同一份密钥库信息 → 任何机器的构建产物
-// 签名一致, 更新可原地覆盖、IPC 常通。未配置时回退构建机默认
-// debug keystore —— 此时两应用必须在同一台机器构建才能同签名。
-//
-// 配置方法见 signing.properties.example。
-val signingPropsFile = rootProject.file("signing.properties")
-val signingProps = Properties().apply {
-    if (signingPropsFile.exists()) {
-        signingPropsFile.inputStream().use { load(it) }
-    }
-}
+// 签名说明 (v3.23.4, 共享签名机制已撤销 —— 违背项目密钥原则):
+// 两 App 的 IPC 入口由 signature 级权限互锁, 签名证书必须一致。
+// 开发期: Engine 与 Vault 在同一台机器构建 (共用 ~/.android/debug.keystore),
+// 签名天然一致, 无需任何配置。
+// 换机/重装/签名变化导致的身份找回: 走 Vault 的「迁移」功能
+// (指纹门 + 二维码光学通道转移绑定, 私钥全程不离用户授权)。
+// AppBIpcClient.diagnoseVaultChannel() 会在签名不一致时给出定向指引。
 
 android {
     namespace = "com.engine"
@@ -35,9 +20,9 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.23.3: IPC 签名诊断 (唤起失败根因可见化) + 可选共享签名机制
-        versionCode = 15
-        versionName = "3.23.3"
+        // v3.23.4: 撤销共享签名机制 (违背密钥原则), 失败指引改指 Vault 迁移通道
+        versionCode = 16
+        versionName = "3.23.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -47,27 +32,8 @@ android {
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
     }
 
-    signingConfigs {
-        if (signingPropsFile.exists()) {
-            create("sharedIpc") {
-                storeFile = rootProject.file(signingProps.getProperty("storeFile"))
-                storePassword = signingProps.getProperty("storePassword")
-                keyAlias = signingProps.getProperty("keyAlias")
-                keyPassword = signingProps.getProperty("keyPassword")
-            }
-        }
-    }
-
     buildTypes {
-        debug {
-            if (signingPropsFile.exists()) {
-                signingConfig = signingConfigs.getByName("sharedIpc")
-            }
-        }
         release {
-            if (signingPropsFile.exists()) {
-                signingConfig = signingConfigs.getByName("sharedIpc")
-            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

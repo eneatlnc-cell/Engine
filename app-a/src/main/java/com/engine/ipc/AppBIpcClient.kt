@@ -259,15 +259,19 @@ class AppBIpcClient(private val context: Context) {
      *
      * 定向文案取代旧版一律 "请确认已安装" —— 签名不一致时给出证书指纹
      * 与处置指引, 未安装时如实提示安装, 其余透出真实异常类名。
+     *
+     * v3.23.4: 处置指引指向 "同机构建 + Vault 迁移"。
+     * 共享签名机制已撤销 (生成跨机构共享密钥违背项目密钥原则
+     * —— 应用生成密钥对, Vault 离线保管, 不引入额外分发面)。
      */
     fun describeLaunchFailure(): String = when (val d = diagnoseVaultChannel()) {
         VaultIpcDiagnostic.VaultNotInstalled ->
             "未检测到 Vault 应用 (com.vault), 请先安装 Vault"
         is VaultIpcDiagnostic.SignatureMismatch ->
             "Engine 与 Vault 的签名证书不一致, signature 级 IPC 权限无法授予\n" +
-                "(这正是唤不起 Vault 与更新后身份丢失的根源)\n" +
-                "处置: 在同一台机器重新构建两个应用, 或为两工程配置同一共享签名 " +
-                "(signing.properties, 见仓库 README)\n" +
+                "处置:\n" +
+                "① 在同一台机器重新构建并安装两个应用 (同机 debug 签名天然一致)\n" +
+                "② 换机/重装后, 用 Vault 的「迁移」功能转移绑定身份后再恢复\n" +
                 "Engine 证书: ${d.engineCertSha256.take(16)}…\n" +
                 "Vault  证书: ${d.vaultCertSha256.take(16)}…"
         VaultIpcDiagnostic.Ready ->
