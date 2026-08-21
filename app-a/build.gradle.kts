@@ -12,9 +12,9 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.23.1: DID 卡提示中性化 + @短码展示恢复 (设定保留, 语法后续实现)
-        versionCode = 13
-        versionName = "3.23.1"
+        // v3.23.2: Vault 身份恢复根修 (会话落盘 + App 层消费) + 联系人按钮随列表 + 搜索占位符简化
+        versionCode = 14
+        versionName = "3.23.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
