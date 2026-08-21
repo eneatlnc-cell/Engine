@@ -86,7 +86,8 @@ class LoginViewModel : ViewModel() {
             _uiState.value = LoginUiState.Loading
             armTimeout(sessionId)
         } else {
-            _uiState.value = LoginUiState.Error("无法唤起 Vault, 请确认已安装")
+            // v3.23.3: 定向失败原因 (签名不一致/未安装/真实异常)
+            _uiState.value = LoginUiState.Error(ipcClient.describeLaunchFailure())
         }
     }
 

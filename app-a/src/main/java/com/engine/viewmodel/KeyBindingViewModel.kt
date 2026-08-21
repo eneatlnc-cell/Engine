@@ -178,7 +178,8 @@ class KeyBindingViewModel : ViewModel() {
             app.awaitingIpc = true
             _uiState.value = KeyBindingUiState.WaitingCallback
         } else {
-            _uiState.value = KeyBindingUiState.Error("无法唤起 Vault, 请确认已安装")
+            // v3.23.3: 定向失败原因 (签名不一致/未安装/真实异常), 不再一律 "请确认已安装"
+            _uiState.value = KeyBindingUiState.Error(ipcClient.describeLaunchFailure())
         }
     }
 
@@ -205,7 +206,9 @@ class KeyBindingViewModel : ViewModel() {
             app.awaitingIpc = true
             _uiState.value = KeyBindingUiState.Restoring
         } else {
-            _uiState.value = KeyBindingUiState.Error("无法唤起 Vault, 请确认已安装")
+            // v3.23.3: 恢复入口的失败尤其致命 (身份找回的唯一通道),
+            // 必须把真实原因 (多为两 App 签名不一致) 原样告知用户
+            _uiState.value = KeyBindingUiState.Error(ipcClient.describeLaunchFailure())
         }
     }
 

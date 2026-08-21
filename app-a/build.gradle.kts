@@ -1,7 +1,30 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
+}
+
+// ---- v3.23.3: 可选共享签名 (Engine 与 Vault 必须同证书) ------------------
+//
+// 根因背景: 两 App 的全部 IPC 入口由 signature 级自定义权限互锁
+// (com.vault.permission.VAULT_IPC / com.engine.permission.ENGINE_CALLBACK),
+// 签名证书不一致时: ①跨应用唤起直接 SecurityException (表现为
+// "无法唤起 Vault"); ②无法覆盖安装, 更新必须卸载重装 → 应用数据全清
+// → "应用更新造成用户身份丢失"。
+//
+// 机制: 仓库根目录放一份 signing.properties (已被 .gitignore 排除,
+// 密钥绝不入库), 两工程填同一份密钥库信息 → 任何机器的构建产物
+// 签名一致, 更新可原地覆盖、IPC 常通。未配置时回退构建机默认
+// debug keystore —— 此时两应用必须在同一台机器构建才能同签名。
+//
+// 配置方法见 signing.properties.example。
+val signingPropsFile = rootProject.file("signing.properties")
+val signingProps = Properties().apply {
+    if (signingPropsFile.exists()) {
+        signingPropsFile.inputStream().use { load(it) }
+    }
 }
 
 android {
@@ -12,9 +35,9 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.23.2: Vault 身份恢复根修 (会话落盘 + App 层消费) + 联系人按钮随列表 + 搜索占位符简化
-        versionCode = 14
-        versionName = "3.23.2"
+        // v3.23.3: IPC 签名诊断 (唤起失败根因可见化) + 可选共享签名机制
+        versionCode = 15
+        versionName = "3.23.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -24,8 +47,27 @@ android {
         buildConfigField("String", "RELAY_URL", "\"$relayUrl\"")
     }
 
+    signingConfigs {
+        if (signingPropsFile.exists()) {
+            create("sharedIpc") {
+                storeFile = rootProject.file(signingProps.getProperty("storeFile"))
+                storePassword = signingProps.getProperty("storePassword")
+                keyAlias = signingProps.getProperty("keyAlias")
+                keyPassword = signingProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            if (signingPropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("sharedIpc")
+            }
+        }
         release {
+            if (signingPropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("sharedIpc")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
