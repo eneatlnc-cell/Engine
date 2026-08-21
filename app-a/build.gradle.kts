@@ -12,9 +12,10 @@ android {
         applicationId = "com.engine"
         minSdk = 26
         targetSdk = 34
-        // v3.22.2: FAB 重影根修 —— 撤 CircleShape 描边, 消除正圆描边叠 M3E 超圆容器的双轮廓
-        versionCode = 11
-        versionName = "3.22.2"
+        // v3.23: 联系人页重构 (去搜索框/添加按钮常驻) + 添加凭据唯一化
+        // (仅指纹, 大小写归一根治不对应) + 搜索框添加路径 + DID 不可复制
+        versionCode = 12
+        versionName = "3.23.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

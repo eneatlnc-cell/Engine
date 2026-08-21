@@ -62,15 +62,20 @@ class PersistentContactStore(context: Context) {
 
     /**
      * 添加联系人 (若指纹已存在则更新昵称) — 落盘
+     *
+     * v3.23: 指纹入库前统一小写 —— 线上指纹恒为小写 hex
+     * (KeyFingerprint "%02x"), 大写条目在消息精确匹配 (==) 中永远
+     * 命不中, 首条消息会触发自动再加重复条目。
      */
     @Synchronized
     fun addContact(fingerprint: String, nickname: String) {
+        val fp = fingerprint.trim().lowercase()
         val current = _contacts.value.toMutableList()
-        val idx = current.indexOfFirst { it.fingerprint == fingerprint }
+        val idx = current.indexOfFirst { it.fingerprint == fp }
         if (idx >= 0) {
             current[idx] = current[idx].copy(nickname = nickname)
         } else {
-            current.add(Contact(fingerprint = fingerprint, nickname = nickname))
+            current.add(Contact(fingerprint = fp, nickname = nickname))
         }
         _contacts.value = current
         persist(current)
@@ -120,11 +125,16 @@ class PersistentContactStore(context: Context) {
         persist(emptyList())
     }
 
-    /** 冷启动加载; 文件损坏时自愈为空表 */
+    /** 冷启动加载; 文件损坏时自愈为空表
+     *
+     * v3.23 迁移: 旧版本对话框以大写形态落盘的指纹统一归一为小写,
+     * 并按指纹去重 (旧大小写双条目合并, 防列表 key 冲突崩溃)。
+     */
     private fun load(): List<Contact> = try {
         if (file.exists()) {
             json.decodeFromString(serializer, file.readText())
-                .map { Contact(fingerprint = it.fp, nickname = it.nickname) }
+                .map { Contact(fingerprint = it.fp.trim().lowercase(), nickname = it.nickname) }
+                .distinctBy { it.fingerprint }
         } else emptyList()
     } catch (e: Exception) {
         Log.w(TAG, "Contacts file corrupted, starting fresh: ${e.message}")

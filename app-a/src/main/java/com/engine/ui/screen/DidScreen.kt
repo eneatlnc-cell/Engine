@@ -74,8 +74,8 @@ import kotlinx.coroutines.launch
  *  · 头像: 点击大头像 → 系统相册选图 (EXIF 纠向 + 中心裁剪 + 512px 落盘);
  *          已设置时可移除, 回退指纹渐变头像
  *  · 昵称: 行内 ✎ → 对话框修改 (≤24 字, 空串 = 恢复默认 "我")
- *  · DID/指纹: 只读展示 (did:engine:{指纹} 由密钥派生, 不可修改),
- *          点击复制; @短码 即聊天页搜索语法
+ *  · v3.23 凭据唯一化: DID 只读展示且**不可复制** —— 添加联系人
+ *          仅走指纹; 指纹卡点击复制, 是对外提供的唯一添加凭据
  *
  *  设计:
  *  · 与群组/标记物同款透明 Scaffold, 全局渐变一路铺到顶
@@ -272,28 +272,25 @@ fun DidScreen(
 
             Spacer(Modifier.height(14.dp))
 
-            // ── DID 卡 (只读) ─────────────────────────────────
+            // ── DID 卡 (只读, v3.23 不可复制) ──────────────────
+            // 添加联系人凭据唯一化: DID 不再可复制, 杜绝 "DID 与指纹
+            // 添加出两个不对应联系人" 的入口 (用户决策)
             InfoCard(
                 icon = { Icon(Icons.Filled.Fingerprint, null, tint = MaterialTheme.colorScheme.primary) },
                 title = "DID",
                 value = "did:engine:${fingerprint ?: "未绑定"}",
-                hint = "由密钥指纹派生 · 永久不变 · 点击复制",
-                onClick = {
-                    fingerprint?.let {
-                        clipboard.setText(AnnotatedString("did:engine:$it"))
-                        scope.launch { snackbarHostState.showSnackbar("DID 已复制") }
-                    }
-                }
+                hint = "由密钥指纹派生 · 添加联系人请使用下方指纹",
+                onClick = null
             )
 
             Spacer(Modifier.height(14.dp))
 
-            // ── 指纹卡 (只读) ─────────────────────────────────
+            // ── 指纹卡 (唯一添加凭据, 可复制) ──────────────────
             InfoCard(
                 icon = { Icon(Icons.Filled.Fingerprint, null, tint = MaterialTheme.colorScheme.primary) },
                 title = "公钥指纹",
                 value = fingerprint ?: "未绑定 — 请先完成密钥绑定",
-                hint = "@${(fingerprint ?: "??????").take(6).uppercase()} 即聊天页搜索语法 · 点击复制",
+                hint = "点击复制 · 对方添加你时需要此指纹",
                 monospace = fingerprint != null,
                 onClick = {
                     fingerprint?.let {
@@ -347,7 +344,8 @@ fun DidScreen(
 }
 
 /**
- * 只读信息卡: 图标 + 标题 + 值 + 提示, 整卡可点 (复制类操作)
+ * 只读信息卡: 图标 + 标题 + 值 + 提示。
+ * onClick 为 null 时纯展示不可点 (v3.23: DID 卡不可复制)。
  */
 @Composable
 private fun InfoCard(
@@ -355,15 +353,18 @@ private fun InfoCard(
     title: String,
     value: String,
     hint: String,
-    onClick: () -> Unit,
+    onClick: (() -> Unit)? = null,
     monospace: Boolean = false,
 ) {
+    val containerModifier = Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(20.dp))
+        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-            .clickable(onClick = onClick)
+        modifier = (
+            if (onClick != null) containerModifier.clickable(onClick = onClick)
+            else containerModifier
+            )
             .padding(horizontal = 16.dp, vertical = 14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {

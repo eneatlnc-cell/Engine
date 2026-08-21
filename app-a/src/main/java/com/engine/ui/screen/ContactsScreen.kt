@@ -1,9 +1,7 @@
 package com.engine.ui.screen
 
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,12 +16,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonAdd
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -57,13 +53,13 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.engine.data.Contact
+import com.engine.data.FingerprintInput
 import com.engine.ui.components.BreathingEmptyState
 import com.engine.ui.components.GradientAvatar
 import com.engine.viewmodel.ContactsViewModel
@@ -72,11 +68,13 @@ import kotlinx.coroutines.launch
 /**
  * 联系人页面 (Telegram 2026 风格)
  *
- * - 顶部粘性搜索框: 按指纹过滤 (非昵称)
  * - 联系人列表: 头像 + 昵称 + 指纹 (等宽字体, 截断省略) + 复制/删除按钮
  * - 点击列表项: 弹出 ModalBottomSheet 展示完整指纹 (可选中/复制)
- * - 空状态 / 无匹配结果状态
- * - 添加联系人对话框 (仅指纹字段, 昵称默认取指纹前 8 位)
+ * - v3.23: 搜索框移除 (主界面已有搜索, 此处冗余);
+ *   "添加联系人"按钮常驻页面底部 —— 空态与列表态统一,
+ *   添加第二个联系人不再无入口
+ * - 添加联系人对话框: 仅接受完整指纹 (32 位十六进制),
+ *   DID 输入被拒绝 (添加凭据唯一化, v3.23 用户决策)
  */
 @Composable
 fun ContactsScreen(
@@ -87,19 +85,10 @@ fun ContactsScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
-    var query by remember { mutableStateOf("") }
     var showAddDialog by remember { mutableStateOf(false) }
     var selectedContact by remember { mutableStateOf<Contact?>(null) }
 
     val contacts = uiState.contacts
-    val filteredContacts = remember(query, contacts) {
-        if (query.isBlank()) {
-            contacts
-        } else {
-            val needle = query.trim()
-            contacts.filter { it.fingerprint.contains(needle, ignoreCase = true) }
-        }
-    }
 
     val copyFingerprint: (Contact) -> Unit = { contact ->
         clipboardManager.setText(AnnotatedString(contact.fingerprint))
@@ -107,57 +96,42 @@ fun ContactsScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        if (contacts.isEmpty()) {
-            EmptyState(onAdd = { showAddDialog = true })
-        } else {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // 粘性搜索框 (按指纹过滤)
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    placeholder = { Text("输入指纹搜索") },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Filled.Search,
-                            contentDescription = null
-                        )
-                    },
-                    trailingIcon = {
-                        if (query.isNotEmpty()) {
-                            IconButton(onClick = { query = "" }) {
-                                Icon(
-                                    imageVector = Icons.Filled.Close,
-                                    contentDescription = "清除"
-                                )
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(24.dp)
-                )
-
-                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    if (filteredContacts.isEmpty()) {
-                        NoResultsState()
-                    } else {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            items(
-                                items = filteredContacts,
-                                key = { it.fingerprint }
-                            ) { contact ->
-                                ContactItem(
-                                    contact = contact,
-                                    onClick = { selectedContact = contact },
-                                    onCopy = { copyFingerprint(contact) },
-                                    onDelete = { viewModel.removeContact(contact.fingerprint) }
-                                )
-                            }
+        Column(modifier = Modifier.fillMaxSize()) {
+            // 列表区: 空态呼吸大图 / 联系人列表
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (contacts.isEmpty()) {
+                    BreathingEmptyState(
+                        icon = Icons.Filled.Person,
+                        title = "暂无联系人",
+                        subtitle = "添加对方公钥指纹即可开始安全通讯"
+                    )
+                } else {
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        items(
+                            items = contacts,
+                            key = { it.fingerprint }
+                        ) { contact ->
+                            ContactItem(
+                                contact = contact,
+                                onClick = { selectedContact = contact },
+                                onCopy = { copyFingerprint(contact) },
+                                onDelete = { viewModel.removeContact(contact.fingerprint) }
+                            )
                         }
                     }
                 }
+            }
+
+            // v3.23: 添加按钮常驻底部 —— 空态/列表态都有, 永不消失
+            Button(
+                onClick = { showAddDialog = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp)
+            ) {
+                Icon(Icons.Filled.PersonAdd, contentDescription = null)
+                Spacer(modifier = Modifier.size(8.dp))
+                Text("添加联系人")
             }
         }
 
@@ -183,58 +157,6 @@ fun ContactsScreen(
             onCopy = { copyFingerprint(contact) },
             onDelete = { viewModel.removeContact(contact.fingerprint) },
             onDismiss = { selectedContact = null }
-        )
-    }
-}
-
-/**
- * 空状态: 暂无联系人
- *
- * v3.22: 动画主体迁移至共享组件 [BreathingEmptyState] —— 与聊天/群组/
- * 标记物四页统一 "动态大图 + 呼吸副标题" 规格; 旧私有实现的动画代码删除。
- */
-@Composable
-private fun EmptyState(onAdd: () -> Unit) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        BreathingEmptyState(
-            icon = Icons.Filled.Person,
-            title = "暂无联系人",
-            subtitle = "添加对方公钥指纹即可开始安全通讯"
-        )
-        Button(
-            onClick = onAdd,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 48.dp)
-        ) {
-            Icon(Icons.Filled.PersonAdd, contentDescription = null)
-            Spacer(modifier = Modifier.size(8.dp))
-            Text("添加联系人")
-        }
-    }
-}
-
-/**
- * 搜索无结果状态
- */
-@Composable
-private fun NoResultsState() {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            imageVector = Icons.Filled.Search,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(48.dp)
-        )
-        Spacer(modifier = Modifier.size(12.dp))
-        Text(
-            text = "未找到匹配的联系人",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
@@ -401,9 +323,11 @@ private fun ContactDetailBottomSheet(
 }
 
 /**
- * 添加联系人对话框
+ * 添加联系人对话框 (v3.23: 仅指纹)
  *
- * 仅采集对方指纹 (自动聚焦, 必填); 确认时昵称默认取指纹前 8 位。
+ * 只接受完整指纹 —— 32 位十六进制 (不区分大小写, 自动去空白),
+ * 实时校验并给定向错误提示; DID 输入被拒绝 (添加凭据唯一化)。
+ * 确认时昵称默认 "用户 + 指纹前 8 位"。
  */
 @Composable
 private fun AddContactDialog(
@@ -417,6 +341,17 @@ private fun AddContactDialog(
         fingerprintFocusRequester.requestFocus()
     }
 
+    // v3.23: 输入即校验 —— 清洗 (去空白/小写) 后须恰为 32 位 hex
+    val cleaned = FingerprintInput.clean(fingerprint)
+    val errorText = when {
+        fingerprint.isBlank() -> null
+        FingerprintInput.isDid(fingerprint) ->
+            "仅支持指纹添加, 请让对方提供完整指纹"
+        !FingerprintInput.isValid(cleaned) ->
+            "指纹格式不正确: 应为 32 位十六进制字符 (当前 ${cleaned.length} 位)"
+        else -> null
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("添加联系人") },
@@ -424,11 +359,18 @@ private fun AddContactDialog(
             Column {
                 OutlinedTextField(
                     value = fingerprint,
-                    onValueChange = { fingerprint = it },
+                    onValueChange = { fingerprint = it.take(64) },
                     label = { Text("对方指纹") },
                     singleLine = true,
+                    isError = errorText != null,
+                    supportingText = {
+                        Text(
+                            text = errorText ?: "32 位十六进制 · 不区分大小写",
+                            color = if (errorText != null) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
                     keyboardOptions = KeyboardOptions(
-                        capitalization = KeyboardCapitalization.Characters,
                         keyboardType = KeyboardType.Ascii,
                         imeAction = ImeAction.Done
                     ),
@@ -440,11 +382,9 @@ private fun AddContactDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = fingerprint.isNotBlank(),
+                enabled = errorText == null,
                 onClick = {
-                    val fp = fingerprint.trim()
-                    val name = fp.take(8)
-                    onConfirm(fp, name)
+                    onConfirm(cleaned, "用户 ${cleaned.take(8)}")
                 }
             ) {
                 Text("确认")

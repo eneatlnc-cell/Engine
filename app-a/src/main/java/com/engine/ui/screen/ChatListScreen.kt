@@ -82,13 +82,16 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.engine.EngineApp
 import com.engine.data.BoundIdentityStore
+import com.engine.data.FingerprintInput
 import com.engine.ui.components.BreathingEmptyState
 import com.engine.ui.components.ChatListItem
 import com.engine.ui.components.EngineNavBar
@@ -222,7 +225,9 @@ fun ChatListScreen(
                                 value = searchQuery,
                                 onValueChange = { searchQuery = it },
                                 placeholder = {
-                                    Text("@指纹短码 或 昵称", style = MaterialTheme.typography.bodyMedium)
+                                    // v3.23: 搜索凭据唯一化 —— 仅指纹
+                                    // (昵称/@短码语法移除, 用户决策)
+                                    Text("输入指纹搜索 / 添加", style = MaterialTheme.typography.bodyMedium)
                                 },
                                 singleLine = true,
                                 shape = RoundedCornerShape(22.dp),
@@ -418,6 +423,17 @@ fun ChatListScreen(
                         searchQuery = searchQuery,
                         onSearchQueryChange = { searchQuery = it },
                         onChatClick = { fingerprint ->
+                            navController.navigate("chat/$fingerprint")
+                        },
+                        // v3.23: 搜索框添加路径 —— 完整指纹且通讯录无此人时
+                        // 结果卡可直达添加并开聊 (用户诉求 "搜索框能加联系人")
+                        onAddContact = { fingerprint ->
+                            app.contactStore.addContact(
+                                fingerprint,
+                                "用户 ${fingerprint.take(8)}"
+                            )
+                            searchMode = false
+                            searchQuery = ""
                             navController.navigate("chat/$fingerprint")
                         }
                     )
@@ -697,14 +713,18 @@ private fun FabAction(
  * 聊天列表内容
  *
  * v3.11: 常驻搜索框移除 —— 搜索入口上移到顶栏 (点击 🔍 展开),
- * 列表多出一行内容高度; @指纹短码 / 昵称过滤逻辑不变
+ * 列表多出一行内容高度
+ * v3.23: 过滤仅按指纹 (凭据唯一化); 输入完整合法指纹且通讯录无
+ * 此人时展示 "添加联系人" 结果卡 → 添加并开聊
  */
 @Composable
 private fun ChatListContent(
     uiState: com.engine.viewmodel.ChatListUiState,
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
-    onChatClick: (String) -> Unit
+    onChatClick: (String) -> Unit,
+    // v3.23: 搜索框添加路径 (完整指纹 + 通讯录无此人 → 结果卡)
+    onAddContact: (String) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         // 非搜索态下顶栏不显示输入框, 但保留空态提示
@@ -717,43 +737,55 @@ private fun ChatListContent(
             )
         }
 
-        // 聊天列表 (过滤后)
-        // Telegram 风格搜索:
-        // - 以 "@" 开头: 按昵称模糊搜索 (去除 "@" 前缀, 忽略大小写)
-        // - 否则: 按指纹模糊搜索 (忽略大小写)
-        // - 空白查询: 显示全部
-        val filteredList = when {
-            searchQuery.isBlank() -> uiState.chatList
-            searchQuery.startsWith("@") -> {
-                val usernameQuery = searchQuery.removePrefix("@")
-                uiState.chatList.filter { contact ->
-                    contact.nickname.contains(usernameQuery, ignoreCase = true)
-                }
-            }
-            else -> {
-                uiState.chatList.filter { contact ->
-                    contact.fingerprint.contains(searchQuery, ignoreCase = true)
-                }
-            }
+        // v3.23: 搜索凭据唯一化 —— 仅按指纹过滤 (忽略大小写);
+        // 昵称/@短码语法移除 (用户决策: 指纹是唯一搜索凭据)
+        val filteredList = if (searchQuery.isBlank()) uiState.chatList
+        else uiState.chatList.filter { contact ->
+            contact.fingerprint.contains(searchQuery.trim(), ignoreCase = true)
         }
 
+        // v3.23: 输入恰为完整合法指纹 (清洗后 32 位 hex) 且通讯录无此人
+        // → 展示 "添加联系人" 结果卡。短码 (6 位) 数学上无法还原完整指纹,
+        // 不提供添加路径 —— 添加请输入完整指纹。
+        val cleanedQuery = FingerprintInput.clean(searchQuery)
+        val addableFingerprint =
+            if (FingerprintInput.isValid(cleanedQuery) &&
+                uiState.chatList.none { it.fingerprint.equals(cleanedQuery, ignoreCase = true) }
+            ) cleanedQuery
+            else null
+
         if (filteredList.isEmpty()) {
-            if (searchQuery.isBlank()) {
-                // 空会话列表: 呼吸动画的帆船图标 (匹配 Engine 新 Logo)
-                BreathingEmptyState(
-                    icon = Icons.Filled.Sailing,
-                    title = "暂无会话, 请先添加联系人",
-                    subtitle = "开始你的安全通讯之旅"
-                )
-            } else {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "未找到匹配的会话",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+            when {
+                searchQuery.isBlank() -> {
+                    // 空会话列表: 呼吸动画的帆船图标 (匹配 Engine 新 Logo)
+                    BreathingEmptyState(
+                        icon = Icons.Filled.Sailing,
+                        title = "暂无会话, 请先添加联系人",
+                        subtitle = "开始你的安全通讯之旅"
                     )
+                }
+                // 完整指纹未添加 → 可直接添加并开聊
+                addableFingerprint != null -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.TopCenter
+                    ) {
+                        AddContactResultCard(
+                            fingerprint = addableFingerprint,
+                            onAdd = { onAddContact(addableFingerprint) }
+                        )
+                    }
+                }
+                else -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "未找到匹配的会话",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         } else {
@@ -774,6 +806,57 @@ private fun ChatListContent(
                 }
             }
         }
+    }
+}
+
+/**
+ * v3.23 · 搜索页 "添加联系人" 结果卡
+ *
+ * 主界面搜索框的添加路径: 输入为完整合法指纹且通讯录无此人时展示,
+ * 点击即添加并进入聊天 (昵称默认 "用户 + 指纹前 8 位")。
+ */
+@Composable
+private fun AddContactResultCard(
+    fingerprint: String,
+    onAdd: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+            .clickable(onClick = onAdd)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.PersonAdd,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(28.dp),
+        )
+        Spacer(modifier = Modifier.size(14.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "添加联系人",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = fingerprint,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
