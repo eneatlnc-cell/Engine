@@ -47,8 +47,53 @@ class BoundIdentityStore(context: Context) {
         prefs.edit().clear().apply()
     }
 
+    // ---- v3.23.2: 身份恢复会话落盘 (修复进程死亡导致恢复静默失败) ----
+
+    /**
+     * 记录进行中的身份恢复会话。
+     *
+     * 恢复流程跨应用: Engine 退后台 → Vault 指纹门 (数秒~数十秒) → 回调。
+     * 这期间 Engine 的后台进程随时可能被系统回收 —— 若会话只存
+     * ViewModel 内存, 进程死亡后回调到达时新 ViewModel 的
+     * pendingSessionId 为空, 回调无人认领, 恢复静默失败
+     * (即 "Vault 的身份无法恢复" 的根因)。
+     * 落盘后 EngineApp 可在冷启动的回调入口直接完成恢复。
+     */
+    fun savePendingRestore(sessionId: String) {
+        prefs.edit()
+            .putString(KEY_PENDING_RESTORE_SESSION, sessionId)
+            .putLong(KEY_PENDING_RESTORE_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    /**
+     * 读取进行中的恢复会话; 超过 TTL 的陈旧会话自动清除
+     * (Vault 永不回调 = 流程已死, 如用户在 Vault 侧直接退出)。
+     */
+    fun getPendingRestoreSessionId(): String? {
+        val sessionId = prefs.getString(KEY_PENDING_RESTORE_SESSION, null) ?: return null
+        val at = prefs.getLong(KEY_PENDING_RESTORE_AT, 0L)
+        if (System.currentTimeMillis() - at > PENDING_RESTORE_TTL_MS) {
+            clearPendingRestore()
+            return null
+        }
+        return sessionId
+    }
+
+    fun clearPendingRestore() {
+        prefs.edit()
+            .remove(KEY_PENDING_RESTORE_SESSION)
+            .remove(KEY_PENDING_RESTORE_AT)
+            .apply()
+    }
+
     companion object {
         private const val KEY_FINGERPRINT = "bound_fingerprint"
         private const val KEY_PUBLIC_KEY = "bound_public_key"
+
+        // v3.23.2: 待恢复会话键 + TTL (覆盖用户从容完成一次指纹验证)
+        private const val KEY_PENDING_RESTORE_SESSION = "pending_restore_session"
+        private const val KEY_PENDING_RESTORE_AT = "pending_restore_at"
+        private const val PENDING_RESTORE_TTL_MS = 10 * 60 * 1000L
     }
 }

@@ -70,9 +70,9 @@ import kotlinx.coroutines.launch
  *
  * - 联系人列表: 头像 + 昵称 + 指纹 (等宽字体, 截断省略) + 复制/删除按钮
  * - 点击列表项: 弹出 ModalBottomSheet 展示完整指纹 (可选中/复制)
- * - v3.23: 搜索框移除 (主界面已有搜索, 此处冗余);
- *   "添加联系人"按钮常驻页面底部 —— 空态与列表态统一,
- *   添加第二个联系人不再无入口
+ * - v3.23: 搜索框移除 (主界面已有搜索, 此处冗余)
+ * - v3.23.2: 添加按钮不固定屏幕底部 —— 空态在底部居中 (原位置),
+ *   列表态作为列表尾项随列表滚动; 尺寸两态一致
  * - 添加联系人对话框: 仅接受完整指纹 (32 位十六进制),
  *   DID 输入被拒绝 (添加凭据唯一化, v3.23 用户决策)
  */
@@ -96,42 +96,52 @@ fun ContactsScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // 列表区: 空态呼吸大图 / 联系人列表
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (contacts.isEmpty()) {
-                    BreathingEmptyState(
-                        icon = Icons.Filled.Person,
-                        title = "暂无联系人",
-                        subtitle = "添加对方公钥指纹即可开始安全通讯"
-                    )
-                } else {
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
-                        items(
-                            items = contacts,
-                            key = { it.fingerprint }
-                        ) { contact ->
-                            ContactItem(
-                                contact = contact,
-                                onClick = { selectedContact = contact },
-                                onCopy = { copyFingerprint(contact) },
-                                onDelete = { viewModel.removeContact(contact.fingerprint) }
-                            )
-                        }
-                    }
+        if (contacts.isEmpty()) {
+            // 空态: 呼吸大图 + 底部添加按钮 (保持原位置: 底部居中 48dp)
+            Box(modifier = Modifier.fillMaxSize()) {
+                BreathingEmptyState(
+                    icon = Icons.Filled.Person,
+                    title = "暂无联系人",
+                    subtitle = "添加对方公钥指纹即可开始安全通讯"
+                )
+                Button(
+                    onClick = { showAddDialog = true },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 48.dp)
+                ) {
+                    Icon(Icons.Filled.PersonAdd, contentDescription = null)
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Text("添加联系人")
                 }
             }
-
-            // v3.23: 添加按钮常驻底部 —— 空态/列表态都有, 永不消失
-            Button(
-                onClick = { showAddDialog = true },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
-            ) {
-                Icon(Icons.Filled.PersonAdd, contentDescription = null)
-                Spacer(modifier = Modifier.size(8.dp))
-                Text("添加联系人")
+        } else {
+            // 列表态: 添加按钮作为列表尾项 —— 随列表滚动 (用户要求),
+            // 不固定在屏幕底部; 尺寸与空态按钮一致
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(
+                    items = contacts,
+                    key = { it.fingerprint }
+                ) { contact ->
+                    ContactItem(
+                        contact = contact,
+                        onClick = { selectedContact = contact },
+                        onCopy = { copyFingerprint(contact) },
+                        onDelete = { viewModel.removeContact(contact.fingerprint) }
+                    )
+                }
+                item(key = "add_contact_footer") {
+                    Button(
+                        onClick = { showAddDialog = true },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 12.dp)
+                    ) {
+                        Icon(Icons.Filled.PersonAdd, contentDescription = null)
+                        Spacer(modifier = Modifier.size(8.dp))
+                        Text("添加联系人")
+                    }
+                }
             }
         }
 

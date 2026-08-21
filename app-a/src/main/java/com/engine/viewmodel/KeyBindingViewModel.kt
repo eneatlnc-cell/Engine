@@ -4,10 +4,10 @@ import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.engine.EngineApp
+import com.engine.RestoreOutcome
 import com.engine.crypto.KeyGenerationResult
 import com.engine.data.BoundIdentityStore
 import com.securesocial.core.ipc.IpcCallback
-import com.securesocial.core.ipc.IpcErrorCode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -69,9 +69,6 @@ class KeyBindingViewModel : ViewModel() {
     // 本次绑定的 sessionId; 仅消费与其匹配的回调, 防止误吞登录流程的回调
     private var pendingSessionId: String? = null
 
-    // v3.13: 本次会话是否为 "身份恢复" (Engine 数据清除后从 Vault 取回公钥身份)
-    private var pendingRestore = false
-
     init {
         // 已绑定时展示 Bound 状态, 而非可误触的"生成密钥对"入口
         val bound = BoundIdentityStore(app).getBoundFingerprint()
@@ -85,6 +82,25 @@ class KeyBindingViewModel : ViewModel() {
                 if (callback != null && callback.sessionId == pendingSessionId) {
                     handleCallback(callback)
                     app.consumeCallback()
+                }
+            }
+        }
+
+        // v3.23.2: 观察 App 层恢复结果。
+        // 恢复回调由 EngineApp.deliverCallback 命中落盘会话后直接消费
+        // (进程死亡场景 ViewModel 内存态已丢, 无人认领 —— 即
+        // "Vault 身份无法恢复" 的根因), 结果经此 flow 驱动 UI。
+        viewModelScope.launch {
+            app.restoreOutcome.collect { outcome ->
+                if (outcome != null) {
+                    when (outcome) {
+                        is RestoreOutcome.Success ->
+                            _uiState.value = KeyBindingUiState.Bound(outcome.fingerprint)
+                        is RestoreOutcome.Failure ->
+                            _uiState.value = KeyBindingUiState.Error(outcome.message)
+                    }
+                    pendingSessionId = null
+                    app.consumeRestoreOutcome()
                 }
             }
         }
@@ -159,7 +175,6 @@ class KeyBindingViewModel : ViewModel() {
         val launched = ipcClient.launchImport(sessionId, payload)
         if (launched) {
             pendingSessionId = sessionId
-            pendingRestore = false
             app.awaitingIpc = true
             _uiState.value = KeyBindingUiState.WaitingCallback
         } else {
@@ -176,13 +191,17 @@ class KeyBindingViewModel : ViewModel() {
      *
      * Vault 侧: 无绑定 → NO_BINDING 失败回调 (UI 引导走新生成);
      * 有绑定 → 指纹门后回送公钥 (Base64 X.509) 于 result 参数。
+     *
+     * v3.23.2: sessionId 落盘 (BoundIdentityStore) —— 恢复期间 Engine 退后台
+     * 进程被系统回收后, 冷启动的回调入口 (CallbackActivity → EngineApp)
+     * 仍能认领该会话并在 App 层完成恢复, 结果经 restoreOutcome 驱动 UI。
      */
     fun restoreFromVault() {
         val sessionId = UUID.randomUUID().toString()
         val launched = ipcClient.launchRestore(sessionId)
         if (launched) {
+            app.boundIdentityStore.savePendingRestore(sessionId)
             pendingSessionId = sessionId
-            pendingRestore = true
             app.awaitingIpc = true
             _uiState.value = KeyBindingUiState.Restoring
         } else {
@@ -191,11 +210,11 @@ class KeyBindingViewModel : ViewModel() {
     }
 
     /**
-     * 处理 Vault 回调 (仅当 sessionId 匹配时被调用; v2: 验签后才信任)
+     * 处理 Vault 绑定回调 (仅当 sessionId 匹配时被调用; v2: 验签后才信任)
      *
-     * v3.13: 恢复流程走独立分支 —— 恢复时本地没有 "本次生成的密钥对"
-     * (expectedPub 为 null), 信任链改为: 回调通道 signature 权限 +
-     * "用返回公钥验签" 的私钥持有证明 + 指纹重算一致性校验。
+     * v3.23.2: 身份恢复回调不再走此路径 —— EngineApp.deliverCallback 命中
+     * 落盘的待恢复会话后直接在 App 层完成 (completeRestore), 结果经
+     * restoreOutcome flow 驱动 UI (进程死亡场景 ViewModel 内存态已丢)。
      *
      * 绑定流程验签规则 (不变):
      * - 成功回调: 必须用 "本次生成的密钥对" 公钥验签通过 —— 证明 Vault 确实
@@ -205,11 +224,6 @@ class KeyBindingViewModel : ViewModel() {
      */
     private fun handleCallback(callback: IpcCallback) {
         app.awaitingIpc = false
-
-        if (pendingRestore) {
-            handleRestoreCallback(callback)
-            return
-        }
 
         val expectedPub = sessionManager.identityPublicKey
         if (expectedPub == null) {
@@ -272,70 +286,6 @@ class KeyBindingViewModel : ViewModel() {
             }
             val msg = callback.errorCode?.description ?: "未知错误"
             _uiState.value = KeyBindingUiState.Error(msg)
-        }
-    }
-
-    /**
-     * v3.13 恢复回调处理:
-     *
-     * 成功: result = Base64(X.509 公钥)。
-     *   ① 用该公钥对回调验签 (sig 由 "被恢复的绑定私钥" 签出) —— 私钥持有
-     *      证明 + 公私钥自洽证明; 通道本身受 ENGINE_CALLBACK signature
-     *      权限保护, 仅 Vault 可投递
-     *   ② SessionManager.adoptBoundIdentity 重算指纹并装载身份 (含新 ECDH)
-     *   ③ BoundIdentityStore 持久化 → DID 恢复如初
-     *   ④ 复用 "绑定即登录" (恢复动作刚过 Vault 指纹门, 本身是在场证明)
-     *
-     * 失败: NO_BINDING → 引导走 "生成新密钥对"; 其余按错误码展示。
-     */
-    private fun handleRestoreCallback(callback: IpcCallback) {
-        pendingRestore = false
-
-        if (!callback.isSuccess) {
-            val msg = when (callback.errorCode) {
-                IpcErrorCode.NO_BINDING ->
-                    "Vault 中没有本应用的可恢复身份 (可能从未绑定过), 请生成新密钥对"
-                else -> callback.errorCode?.description ?: "恢复失败"
-            }
-            _uiState.value = KeyBindingUiState.Error(msg)
-            return
-        }
-
-        val resultB64 = callback.result
-            ?: run {
-                _uiState.value = KeyBindingUiState.Error("恢复回调缺少公钥载荷")
-                return
-            }
-
-        try {
-            val pubBytes = android.util.Base64.decode(resultB64, android.util.Base64.NO_WRAP)
-            val pub = java.security.KeyFactory.getInstance("EC")
-                .generatePublic(java.security.spec.X509EncodedKeySpec(pubBytes))
-
-            // ① 私钥持有证明: 用返回公钥验回调签名
-            val verifyError = ipcClient.verifyCallbackSignature(callback, pub)
-            if (verifyError != null) {
-                _uiState.value = KeyBindingUiState.Error("恢复回调验证失败: $verifyError")
-                return
-            }
-
-            // ② 装载身份 (内含指纹重算 + 新 ECDH 临时密钥)
-            val pubB64 = android.util.Base64.encodeToString(pubBytes, android.util.Base64.NO_WRAP)
-            val fingerprint = sessionManager.adoptBoundIdentity(pubB64)
-            if (fingerprint == null) {
-                _uiState.value = KeyBindingUiState.Error("恢复的公钥无法解析")
-                return
-            }
-
-            // ③ 持久化 → 同一 DID 回到本机
-            BoundIdentityStore(app).saveBoundIdentity(fingerprint, pubB64)
-            _uiState.value = KeyBindingUiState.Bound(fingerprint)
-
-            // ④ 恢复即登录: 刚过 Vault 指纹门, 不再重复验证 (同 v3.5 绑定即登录)
-            app.isLoggedIn = true
-            app.onLoginVerified()
-        } catch (e: Exception) {
-            _uiState.value = KeyBindingUiState.Error("身份恢复失败: ${e.message ?: "未知错误"}")
         }
     }
 

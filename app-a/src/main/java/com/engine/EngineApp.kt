@@ -43,6 +43,21 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
+ * v3.23.2 身份恢复结果 (App 层完成, KeyBindingScreen 观察)
+ *
+ * 恢复不再依赖 ViewModel 内存态: 会话落盘 (BoundIdentityStore) +
+ * EngineApp 直接消费回调 —— 恢复期间进程被系统回收后,
+ * 冷启动的回调入口仍能完成恢复并驱动 UI。
+ */
+sealed class RestoreOutcome {
+    /** 恢复成功: 同一 DID 回到本机 */
+    data class Success(val fingerprint: String) : RestoreOutcome()
+
+    /** 恢复失败: 定向文案 (NO_BINDING 引导生成新密钥对等) */
+    data class Failure(val message: String) : RestoreOutcome()
+}
+
+/**
  * Application 类 — 应用级单例容器 (v2)
  *
  * 信任模型:
@@ -249,15 +264,32 @@ class EngineApp : Application() {
     private val _pendingCallback = MutableStateFlow<IpcCallback?>(null)
     val pendingCallback: StateFlow<IpcCallback?> = _pendingCallback.asStateFlow()
 
+    // ---- v3.23.2: 身份恢复结果通道 (App 层完成, UI 观察) ----
+
+    private val _restoreOutcome = MutableStateFlow<RestoreOutcome?>(null)
+    val restoreOutcome: StateFlow<RestoreOutcome?> = _restoreOutcome.asStateFlow()
+
     /**
-     * 投递 Vault 回调 (MainActivity 入口)
+     * v3.23.2 投递 Vault 回调 (MainActivity 入口)
      *
-     * v2 路由规则:
+     * 路由规则:
+     * 0. sessionId 命中落盘的待恢复会话 → App 层直接完成身份恢复
+     *    (v3.23.2: 会话落盘 + App 层消费 —— 恢复期间 Engine 退后台,
+     *    进程被系统回收后回调到达新进程, ViewModel 内存态已丢;
+     *    原实现回调无人认领, 恢复静默失败, 即 "Vault 身份无法恢复")
      * 1. sessionId 命中 pendingSignRequests → 验签后直接派发签名结果 (不经 UI)
      * 2. 其余 → 交给 pendingCallback flow, 由发起 ViewModel 验签消费
      */
     fun deliverCallback(callback: IpcCallback) {
         val sessionId = callback.sessionId
+
+        // v3.23.2 身份恢复回调: 命中落盘会话 → App 层完成 (进程死亡亦可续)
+        if (sessionId != null && sessionId == boundIdentityStore.getPendingRestoreSessionId()) {
+            boundIdentityStore.clearPendingRestore()
+            awaitingIpc = false
+            completeRestore(callback)
+            return
+        }
 
         // 签名请求回调: App 层直接消费
         if (sessionId != null) {
@@ -294,6 +326,78 @@ class EngineApp : Application() {
 
     fun consumeCallback() {
         _pendingCallback.value = null
+    }
+
+    /** UI 消费恢复结果后复位 (KeyBindingViewModel) */
+    fun consumeRestoreOutcome() {
+        _restoreOutcome.value = null
+    }
+
+    /**
+     * v3.23.2 App 层完成身份恢复 (原 KeyBindingViewModel.handleRestoreCallback 迁移)
+     *
+     * 成功: result = Base64(X.509 公钥)
+     *   ① 用该公钥对回调验签 (sig 由 "被恢复的绑定私钥" 签出) —— 私钥持有
+     *      证明 + 公私钥自洽证明; 通道受 ENGINE_CALLBACK signature 权限保护
+     *   ② SessionManager.adoptBoundIdentity 重算指纹并装载身份 (含新 ECDH)
+     *   ③ BoundIdentityStore 持久化 → DID 恢复如初
+     *   ④ 恢复即登录 (刚过 Vault 指纹门 = 在场证明, 同 v3.5 绑定即登录)
+     *
+     * 失败: NO_BINDING → 引导生成新密钥对; USER_CANCELLED → 友好取消文案;
+     *       其余按错误码展示。
+     */
+    private fun completeRestore(callback: IpcCallback) {
+        if (!callback.isSuccess) {
+            val msg = when (callback.errorCode) {
+                IpcErrorCode.NO_BINDING ->
+                    "Vault 中没有本应用的可恢复身份 (可能从未绑定过), 请生成新密钥对"
+                IpcErrorCode.USER_CANCELLED -> "已取消恢复"
+                else -> callback.errorCode?.description ?: "恢复失败"
+            }
+            _restoreOutcome.value = RestoreOutcome.Failure(msg)
+            return
+        }
+
+        val resultB64 = callback.result
+        if (resultB64 == null) {
+            _restoreOutcome.value = RestoreOutcome.Failure("恢复回调缺少公钥载荷")
+            return
+        }
+
+        try {
+            val pubBytes = android.util.Base64.decode(resultB64, android.util.Base64.NO_WRAP)
+            val pub = java.security.KeyFactory.getInstance("EC")
+                .generatePublic(java.security.spec.X509EncodedKeySpec(pubBytes))
+
+            // ① 私钥持有证明: 用返回公钥验回调签名
+            val verifyError = ipcClient.verifyCallbackSignature(callback, pub)
+            if (verifyError != null) {
+                _restoreOutcome.value =
+                    RestoreOutcome.Failure("恢复回调验证失败: $verifyError")
+                return
+            }
+
+            // ② 装载身份 (内含指纹重算 + 新 ECDH 临时密钥)
+            val pubB64 =
+                android.util.Base64.encodeToString(pubBytes, android.util.Base64.NO_WRAP)
+            val fingerprint = sessionManager.adoptBoundIdentity(pubB64)
+            if (fingerprint == null) {
+                _restoreOutcome.value = RestoreOutcome.Failure("恢复的公钥无法解析")
+                return
+            }
+
+            // ③ 持久化 → 同一 DID 回到本机
+            boundIdentityStore.saveBoundIdentity(fingerprint, pubB64)
+            _restoreOutcome.value = RestoreOutcome.Success(fingerprint)
+
+            // ④ 恢复即登录 (进程死亡路径下此处先于 MainActivity 重建执行,
+            //    LoginGate 读到 isLoggedIn=true 直接放行主界面)
+            isLoggedIn = true
+            onLoginVerified()
+        } catch (e: Exception) {
+            _restoreOutcome.value =
+                RestoreOutcome.Failure("身份恢复失败: ${e.message ?: "未知错误"}")
+        }
     }
 
     companion object {

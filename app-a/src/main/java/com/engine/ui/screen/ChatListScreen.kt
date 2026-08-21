@@ -227,7 +227,7 @@ fun ChatListScreen(
                                 placeholder = {
                                     // v3.23: 搜索凭据唯一化 —— 仅指纹
                                     // (昵称/@短码语法移除, 用户决策)
-                                    Text("输入指纹搜索 / 添加", style = MaterialTheme.typography.bodyMedium)
+                                    Text("指纹搜索/添加", style = MaterialTheme.typography.bodyMedium)
                                 },
                                 singleLine = true,
                                 shape = RoundedCornerShape(22.dp),
