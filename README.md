@@ -63,6 +63,25 @@ engine/
 
 `RELAY_URL` 经 `BuildConfig` 注入, 见 `app-a/build.gradle.kts`。
 
+### 应用族签名规范 (与 Vault IPC 互信)
+
+> 硬性工程规范。2026-08 曾因构建机证书不一致导致 "无法唤起 Vault / 更新即丢身份" 事故, 本节即为防再踩坑而定。
+
+**为什么必须同一证书**: Engine 与 Vault 的全部 IPC 入口由 signature 级自定义权限互锁 (`com.vault.permission.VAULT_IPC` / `com.engine.permission.ENGINE_CALLBACK`), Android 仅向 "与权限声明方同证书" 的应用授予 signature 权限。证书不一致的后果:
+
+1. 跨应用唤起直接 `SecurityException` (表现: Engine 无法唤起 Vault)
+2. 无法覆盖安装 → 被迫卸载重装 → 应用数据全清 → 用户身份丢失
+
+**证书一致 ≠ 版本联动**: 权限按证书授予、与版本无关。两 App 更新节奏完全独立 —— Vault 装好可不更新, Engine 任意频率迭代, 只要所有构建产物的**证书**不变, IPC 一直通, 无需伴随升级。
+
+**开发期 (debug)**: 统一各构建机的 debug keystore —— 从一台基准机复制 `~/.android/debug.keystore` 到所有开发机与 CI。debug keystore 密码为公开的 `android`, 本就不是秘密, 属官方设计; 同一台机器构建两 App 则天然一致。
+
+**发布期 (release)**: 全应用族 (Engine + Vault + 未来接入应用) 共用一套 release keystore, 存放于 CI secrets 或团队密码管理器, 绝不提交进仓库。**必须离线备份** (如硬件加密盘): release 证书一旦丢失且无备份, signature 互信无法重建 (Android key rotation 仅支持单应用, 不能跨应用签名互认), 全部用户身份重置 —— 这是比任何功能 bug 都严重的事故。
+
+**与身份密钥的区别**: APK 签名密钥是开发基础设施身份, 不接触用户身份数据、不进 Vault、无 "应用生成密钥对" 语义; 身份密钥 (EC P-256) 由应用生成、Vault 离线保管。两者生命周期与保护方式完全不同, 勿混为一谈。
+
+**证书不一致时的自救**: v3.23.4 起 `AppBIpcClient` 在唤起失败时比对两 App 证书 SHA-256 并给出定向指引 (未安装 / 证书不一致含双方指纹); 换机/重装场景配合 Vault「迁移」功能 (v3.18.0) 转移绑定身份。
+
 ### 本地调试中继
 
 ```bash
